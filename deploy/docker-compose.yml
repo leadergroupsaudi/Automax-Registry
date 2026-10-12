@@ -1,9 +1,9 @@
 # Server-only compose. Copy this file and a .env. Do not copy the Go source.
-# .env must set API_IMAGE and INGEST_TOKEN.
+# .env must set INGEST_TOKEN.
 
 services:
   db:
-    image: postgres:16-alpine
+    image: yashplg/automax31-postgres:v1
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-registry}
@@ -18,7 +18,7 @@ services:
       - registry_db:/var/lib/postgresql/data
 
   redis:
-    image: redis:7-alpine
+    image: yashplg/automax31-redis:v1
     restart: always
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -29,12 +29,12 @@ services:
       - registry_redis:/data
 
   nats:
-    image: nats:2.10-alpine
+    image: yashplg/automax31-nats:v1
     restart: always
     command: ["-js", "-m", "8222"]
 
   api:
-    image: ${API_IMAGE:?set API_IMAGE to your Docker Hub image}
+    image: yashplg/automax31-registry:v1
     restart: always
     ports:
       - "8082:8082"
@@ -50,11 +50,24 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: nats://nats:4222
-      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN}
-      INGEST_EXTERNAL_SYSTEM: ${INGEST_EXTERNAL_SYSTEM:-traccar-go}
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  adapter:
+    image: yashplg/automax31-http-adapter:v1
+    restart: always
+    ports:
+      - "8083:8083"
+    environment:
+      ADAPTER_PORT: 8083
+      ADAPTER_HOST: 0.0.0.0
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN}
+    depends_on:
       redis:
         condition: service_healthy
 

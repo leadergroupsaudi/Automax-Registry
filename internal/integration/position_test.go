@@ -67,12 +67,8 @@ func doToken(t *testing.T, app interface {
 }
 
 func TestPositionIngest(t *testing.T) {
-	truncate(t)
 	store := &memStore{}
-	app := handlers.NewApp(db, &recordingPublisher{}, handlers.HealthTargets{DB: db}, "*", handlers.PositionIngest{
-		Token: "test-token",
-		Store: store,
-	})
+	app := handlers.NewAdapter("test-token", store)
 	requireStatus(t, do(t, app, http.MethodPost, "/ingest/positions", `{"deviceId":"428976543","latitude":1,"longitude":2,"fixTime":"2026-10-09T08:30:00Z"}`), http.StatusUnauthorized)
 	requireStatus(t, doToken(t, app, http.MethodPost, "/ingest/positions", `{"deviceId":"428976543","latitude":1,"longitude":2,"fixTime":"2026-10-09T08:30:00Z"}`, "wrong"), http.StatusUnauthorized)
 

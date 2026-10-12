@@ -122,10 +122,10 @@ INGEST_EXTERNAL_SYSTEM=traccar-go
 
 ## Live positions
 
-Caugar POSTs the latest fix to `POST /ingest/positions` with `Authorization: Bearer <INGEST_TOKEN>`. The body can be flat JSON or Traccar's `{"position":{...}}` forwarder body. The adapter writes Redis GEO key `geo:devices` and hash `device:pos:{deviceId}` using the `deviceId` from the body. No registry link is required. A newer `fixTime` replaces the stored point. `valid: false` and an older `fixTime` return `204` and leave Redis unchanged.
+The adapter is a separate process from the registry API. Caugar POSTs the latest fix to `POST http://localhost:8083/ingest/positions` with `Authorization: Bearer <INGEST_TOKEN>`. The body can be flat JSON or Traccar's `{"position":{...}}` forwarder body. The adapter writes Redis GEO key `geo:devices` and hash `device:pos:{deviceId}` using the `deviceId` from the body. No registry link is required. A newer `fixTime` replaces the stored point. `valid: false` and an older `fixTime` return `204` and leave Redis unchanged. Start it with `go run ./cmd/adapter/main.go` while Postgres, Redis, and the registry API are already running.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8082/ingest/positions \
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8083/ingest/positions \
   -H 'Authorization: Bearer local-dev-token' \
   -H 'Content-Type: application/json' \
   -d '{"deviceId":"4289765883","deviceName":"Unit 1","latitude":12.9716,"longitude":77.5946,"fixTime":"2026-10-09T09:00:00Z"}'

@@ -53,11 +53,27 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: nats://nats:4222
-      INGEST_TOKEN: ${INGEST_TOKEN:-local-dev-token}
-      INGEST_EXTERNAL_SYSTEM: ${INGEST_EXTERNAL_SYSTEM:-traccar-go}
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  adapter:
+    image: ${ADAPTER_IMAGE:-automax-adapter:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.adapter
+    restart: always
+    ports:
+      - "8083:8083"
+    environment:
+      ADAPTER_PORT: 8083
+      ADAPTER_HOST: 0.0.0.0
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      INGEST_TOKEN: ${INGEST_TOKEN:-local-dev-token}
+    depends_on:
       redis:
         condition: service_healthy
 

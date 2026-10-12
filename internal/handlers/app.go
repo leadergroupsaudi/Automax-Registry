@@ -14,14 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// PositionIngest is the Caugar live-position webhook.
-type PositionIngest struct {
-	Token  string
-	System string
-	Store  services.PositionStore
-}
-
-func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrigins string, ingest PositionIngest) *fiber.App {
+func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrigins string) *fiber.App {
 	things := repository.NewThingRepository(db)
 	channels := repository.NewChannelRepository(db)
 	groups := repository.NewGroupRepository(db)
@@ -54,10 +47,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	groupHandler := NewGroupHandler(services.NewGroupService(groups))
 	credentialHandler := NewCredentialHandler(services.NewCredentialService(things, repository.NewCredentialRepository(db)))
 	refs := repository.NewExternalRefRepository(db)
-	positionHandler := NewPositionHandler(services.NewPositionService(ingest.Store), ingest.Token)
 	externalRefHandler := NewExternalRefHandler(services.NewExternalRefService(refs, things))
-
-	app.Post("/ingest/positions", positionHandler.Ingest)
 
 	registry := app.Group("/registry")
 
