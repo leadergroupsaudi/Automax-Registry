@@ -57,7 +57,7 @@ func newApp(pub services.Publisher) *fiber.App {
 	if pub == nil {
 		pub = &recordingPublisher{}
 	}
-	return handlers.NewApp(db, pub, handlers.HealthTargets{DB: db}, "*")
+	return handlers.NewApp(db, pub, handlers.HealthTargets{DB: db}, "*", handlers.PositionIngest{})
 }
 
 func do(t *testing.T, app *fiber.App, method, path, body string) *http.Response {

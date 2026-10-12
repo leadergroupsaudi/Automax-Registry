@@ -11,6 +11,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	NATS     NATSConfig
+	Ingest   IngestConfig
 }
 
 type ServerConfig struct {
@@ -55,6 +56,12 @@ type NATSConfig struct {
 	URL string
 }
 
+// IngestConfig is the shared secret and external system name for live positions.
+type IngestConfig struct {
+	Token  string
+	System string
+}
+
 func Load() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -78,6 +85,10 @@ func Load() *Config {
 		},
 		NATS: NATSConfig{
 			URL: env("NATS_URL", "nats://localhost:4224"),
+		},
+		Ingest: IngestConfig{
+			Token:  env("INGEST_TOKEN", ""),
+			System: env("INGEST_EXTERNAL_SYSTEM", "traccar-go"),
 		},
 	}
 }

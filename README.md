@@ -76,6 +76,9 @@ REDIS_PASSWORD=
 REDIS_DB=0
 
 NATS_URL=nats://localhost:4224
+
+INGEST_TOKEN=local-dev-token
+INGEST_EXTERNAL_SYSTEM=traccar-go
 ```
 
 ## Installation & Running
@@ -116,6 +119,26 @@ NATS_URL=nats://localhost:4224
 `go run` downloads modules on its own.
 
 `device_credentials` and `thing_external_refs` are created by the migration. Credential routes are `POST` and `GET /registry/things/:id/credentials` and `DELETE /registry/things/:id/credentials/:credentialId`. The plaintext secret is returned only by that `POST`. External-ref routes belong to REG-13.
+
+## Live positions
+
+Caugar POSTs the latest fix to `POST /ingest/positions` with `Authorization: Bearer <INGEST_TOKEN>`. The body can be flat JSON or Traccar's `{"position":{...}}` forwarder body. The adapter writes Redis GEO key `geo:devices` and hash `device:pos:{deviceId}` using the `deviceId` from the body. No registry link is required. A newer `fixTime` replaces the stored point. `valid: false` and an older `fixTime` return `204` and leave Redis unchanged.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8082/ingest/positions \
+  -H 'Authorization: Bearer local-dev-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceId":"4289765883","deviceName":"Unit 1","latitude":12.9716,"longitude":77.5946,"fixTime":"2026-10-09T09:00:00Z"}'
+```
+
+Success is HTTP `204`. Confirm Redis:
+
+```bash
+redis-cli -p 6382 GEOPOS geo:devices 428976543
+redis-cli -p 6382 HGETALL device:pos:428976543
+```
+
+Caugar's server cannot call `localhost`. Use the curl above locally. After this service is deployed, send Caugar the public `https` URL, the bearer token, and the JSON body. Replace `INGEST_TOKEN` before that URL is public.
 
 ### Restart
 

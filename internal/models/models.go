@@ -295,6 +295,9 @@ type CredentialListItem struct {
 	RevokedAt *time.Time `json:"revoked_at"`
 }
 
+// ExternalSystemTraccar is the Caugar tracer-go system name stored on external refs.
+const ExternalSystemTraccar = "traccar-go"
+
 // ThingExternalRef maps a Thing to an id in an external system (REG-08 / DSP-05).
 // Routes for this table belong to REG-13.
 type ThingExternalRef struct {

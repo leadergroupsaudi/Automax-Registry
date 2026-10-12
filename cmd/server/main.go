@@ -36,11 +36,18 @@ func main() {
 	nc := natsclient.Connect(cfg.NATS.URL)
 	defer nc.Close()
 
+	if cfg.Ingest.Token == "" {
+		log.Println("registry: INGEST_TOKEN is empty; position ingest will reject requests")
+	}
 	app := handlers.NewApp(db, nc, handlers.HealthTargets{
 		DB:            db,
 		Redis:         redisClient,
 		NATSConnected: nc.Connected,
-	}, cfg.Server.AllowOrigins)
+	}, cfg.Server.AllowOrigins, handlers.PositionIngest{
+		Token:  cfg.Ingest.Token,
+		System: cfg.Ingest.System,
+		Store:  database.NewGeoStore(redisClient),
+	})
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 
 	go func() {

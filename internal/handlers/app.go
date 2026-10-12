@@ -14,7 +14,14 @@ import (
 	"gorm.io/gorm"
 )
 
-func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrigins string) *fiber.App {
+// PositionIngest is the Caugar live-position webhook.
+type PositionIngest struct {
+	Token  string
+	System string
+	Store  services.PositionStore
+}
+
+func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrigins string, ingest PositionIngest) *fiber.App {
 	things := repository.NewThingRepository(db)
 	channels := repository.NewChannelRepository(db)
 	groups := repository.NewGroupRepository(db)
@@ -46,6 +53,11 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	aclHandler := NewACLHandler(services.NewACLService(repository.NewACLRepository(db), channels, things))
 	groupHandler := NewGroupHandler(services.NewGroupService(groups))
 	credentialHandler := NewCredentialHandler(services.NewCredentialService(things, repository.NewCredentialRepository(db)))
+	refs := repository.NewExternalRefRepository(db)
+	positionHandler := NewPositionHandler(services.NewPositionService(ingest.Store), ingest.Token)
+	externalRefHandler := NewExternalRefHandler(services.NewExternalRefService(refs, things))
+
+	app.Post("/ingest/positions", positionHandler.Ingest)
 
 	registry := app.Group("/registry")
 
@@ -54,6 +66,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	registry.Post("/things", thingHandler.Create)
 	registry.Put("/things/:id", thingHandler.Update)
 	registry.Delete("/things/:id", thingHandler.Delete)
+	registry.Post("/things/:id/external-refs", externalRefHandler.Upsert)
 	registry.Get("/things/:id/credentials", credentialHandler.List)
 	registry.Post("/things/:id/credentials", credentialHandler.Issue)
 	registry.Delete("/things/:id/credentials/:credentialId", credentialHandler.Revoke)

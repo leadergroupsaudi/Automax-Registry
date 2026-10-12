@@ -36,6 +36,7 @@ services:
       - "8224:8222"
 
   api:
+    image: ${API_IMAGE:-automax-registry:local}
     build: .
     restart: always
     ports:
@@ -52,6 +53,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: nats://nats:4222
+      INGEST_TOKEN: ${INGEST_TOKEN:-local-dev-token}
+      INGEST_EXTERNAL_SYSTEM: ${INGEST_EXTERNAL_SYSTEM:-traccar-go}
     depends_on:
       db:
         condition: service_healthy
