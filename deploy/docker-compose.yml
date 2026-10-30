@@ -64,10 +64,19 @@ services:
     environment:
       ADAPTER_PORT: 8083
       ADAPTER_HOST: 0.0.0.0
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-registry}
+      DB_PASSWORD: ${DB_PASSWORD:-registry}
+      DB_NAME: ${DB_NAME:-registry}
+      DB_SSLMODE: disable
       REDIS_HOST: redis
       REDIS_PORT: 6379
       INGEST_TOKEN: ${INGEST_TOKEN:?set INGEST_TOKEN}
+      INGEST_EXTERNAL_SYSTEM: ${INGEST_EXTERNAL_SYSTEM:-traccar-go}
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
