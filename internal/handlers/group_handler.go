@@ -18,7 +18,7 @@ func NewGroupHandler(svc *services.GroupService) *GroupHandler {
 func (h *GroupHandler) Create(c *fiber.Ctx) error {
 	var req models.GroupWriteRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	group, err := h.svc.Create(c.UserContext(), req)
 	if err != nil {
@@ -30,11 +30,11 @@ func (h *GroupHandler) Create(c *fiber.Ctx) error {
 func (h *GroupHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.GroupWriteRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	group, err := h.svc.Update(c.UserContext(), id, req)
 	if err != nil {
@@ -46,7 +46,7 @@ func (h *GroupHandler) Update(c *fiber.Ctx) error {
 func (h *GroupHandler) Delete(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	if err := h.svc.Delete(c.UserContext(), id); err != nil {
 		return writeServiceErr(c, err)
@@ -57,7 +57,7 @@ func (h *GroupHandler) Delete(c *fiber.Ctx) error {
 func (h *GroupHandler) Get(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	group, err := h.svc.Get(c.UserContext(), id)
 	if err != nil {

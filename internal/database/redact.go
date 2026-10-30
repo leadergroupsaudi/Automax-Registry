@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/automax/registry/pkg/utils"
 )
@@ -15,5 +16,9 @@ func Redact(s string) string {
 type redactingLogWriter struct{}
 
 func (redactingLogWriter) Printf(format string, args ...any) {
-	log.Print(Redact(fmt.Sprintf(format, args...)))
+	msg := Redact(fmt.Sprintf(format, args...))
+	if strings.Contains(msg, "failed to initialize database") {
+		return
+	}
+	log.Print(msg)
 }

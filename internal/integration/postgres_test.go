@@ -77,7 +77,7 @@ func ensurePostgresContainer() error {
 	const name = "automax-registry-test-pg"
 	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).CombinedOutput()
 	if err != nil {
-		cmd := exec.Command("docker", "run", "-d", "--name", name,
+		cmd := exec.Command("docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
 			"-e", "POSTGRES_USER=registry",
 			"-e", "POSTGRES_PASSWORD=registry",
 			"-e", "POSTGRES_DB=registry",

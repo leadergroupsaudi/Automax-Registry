@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"errors"
-
 	"github.com/automax/registry/internal/services"
 	"github.com/automax/registry/pkg/utils"
 	"github.com/gofiber/fiber/v2"
@@ -25,14 +23,7 @@ func NewAdapterWithThings(token string, store services.PositionStore, things ser
 func newAdapter(token string, svc *services.PositionService) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			code := fiber.StatusInternalServerError
-			var fe *fiber.Error
-			if errors.As(err, &fe) {
-				code = fe.Code
-			}
-			return utils.ErrorResponse(c, code, err.Error())
-		},
+		ErrorHandler:          apiErrorHandler,
 	})
 	app.Use(recover.New())
 	app.Use(logger.New(logger.Config{

@@ -1,12 +1,10 @@
 package handlers
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/automax/registry/internal/repository"
 	"github.com/automax/registry/internal/services"
-	"github.com/automax/registry/pkg/utils"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -21,14 +19,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			code := fiber.StatusInternalServerError
-			var fe *fiber.Error
-			if errors.As(err, &fe) {
-				code = fe.Code
-			}
-			return utils.ErrorResponse(c, code, err.Error())
-		},
+		ErrorHandler:          apiErrorHandler,
 	})
 	app.Use(recover.New())
 	app.Use(logger.New(logger.Config{

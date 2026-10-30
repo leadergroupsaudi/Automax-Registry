@@ -18,11 +18,11 @@ func NewExternalRefHandler(svc *services.ExternalRefService) *ExternalRefHandler
 func (h *ExternalRefHandler) Upsert(c *fiber.Ctx) error {
 	thingID, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.ExternalRefRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	ref, created, err := h.svc.Upsert(c.UserContext(), thingID, req)
 	if err != nil {

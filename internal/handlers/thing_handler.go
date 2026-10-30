@@ -19,7 +19,7 @@ func NewThingHandler(svc *services.ThingService) *ThingHandler {
 func (h *ThingHandler) Create(c *fiber.Ctx) error {
 	var req models.ThingCreateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	thing, err := h.svc.Create(c.UserContext(), req)
 	if err != nil {
@@ -31,11 +31,11 @@ func (h *ThingHandler) Create(c *fiber.Ctx) error {
 func (h *ThingHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.ThingUpdateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	thing, err := h.svc.Update(c.UserContext(), id, req)
 	if err != nil {
@@ -47,7 +47,7 @@ func (h *ThingHandler) Update(c *fiber.Ctx) error {
 func (h *ThingHandler) Delete(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	if err := h.svc.Delete(c.UserContext(), id); err != nil {
 		return writeServiceErr(c, err)
@@ -58,7 +58,7 @@ func (h *ThingHandler) Delete(c *fiber.Ctx) error {
 func (h *ThingHandler) Get(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	thing, err := h.svc.Get(c.UserContext(), id)
 	if err != nil {

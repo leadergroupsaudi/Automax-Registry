@@ -121,6 +121,30 @@ func errorFields(t *testing.T, body map[string]any) map[string]any {
 	return fields
 }
 
+func TestErrorsNameTheProblem(t *testing.T) {
+	app := newApp(nil)
+	missing := requireStatus(t, do(t, app, http.MethodGet, "/registry/no-such", ""), http.StatusNotFound)
+	if missing["error"] != "no GET route at /registry/no-such" {
+		t.Fatalf("missing route %#v", missing)
+	}
+	badThing := requireStatus(t, do(t, app, http.MethodGet, "/registry/things/not-a-uuid", ""), http.StatusBadRequest)
+	if badThing["error"] != "thing id must be a UUID" {
+		t.Fatalf("bad thing id %#v", badThing)
+	}
+	badGroup := requireStatus(t, do(t, app, http.MethodGet, "/registry/groups/not-a-uuid", ""), http.StatusBadRequest)
+	if badGroup["error"] != "group id must be a UUID" {
+		t.Fatalf("bad group id %#v", badGroup)
+	}
+	body := requireStatus(t, do(t, app, http.MethodPost, "/registry/things", `{`), http.StatusBadRequest)
+	if body["error"] != "request body must be JSON" {
+		t.Fatalf("bad json %#v", body)
+	}
+	method := requireStatus(t, do(t, app, http.MethodGet, "/registry/things/"+uuid.New().String()+"/external-refs", ""), http.StatusMethodNotAllowed)
+	if !strings.Contains(fmt.Sprint(method["error"]), "GET is not allowed") {
+		t.Fatalf("method %#v", method)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	body := requireStatus(t, do(t, newApp(nil), http.MethodGet, "/health", ""), http.StatusOK)
 	if body["success"] != true {
@@ -579,7 +603,7 @@ func TestCredentialIssueListAndRevoke(t *testing.T) {
 		"credential list thing_id=" + thingID + " count=1",
 		"credential revoked thing_id=" + thingID,
 		"credential revoke rejected thing_id=" + thingID + " credential_id=" + stored.ID.String() + " reason=already revoked",
-		"credential issue rejected reason=invalid thing id",
+		"reason=thing id must be a UUID",
 		"credential issue rejected thing_id=" + missing + " reason=thing not found",
 	} {
 		if !strings.Contains(logged, line) {

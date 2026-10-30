@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"log"
-
 	"github.com/automax/registry/internal/services"
 	"github.com/automax/registry/pkg/utils"
 	"github.com/gofiber/fiber/v2"
@@ -19,8 +17,7 @@ func NewCredentialHandler(svc *services.CredentialService) *CredentialHandler {
 func (h *CredentialHandler) Issue(c *fiber.Ctx) error {
 	thingID, err := pathID(c, "id")
 	if err != nil {
-		log.Printf("registry: credential issue rejected reason=invalid thing id value=%q", c.Params("id"))
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	issued, err := h.svc.Issue(c.UserContext(), thingID)
 	if err != nil {
@@ -32,8 +29,7 @@ func (h *CredentialHandler) Issue(c *fiber.Ctx) error {
 func (h *CredentialHandler) List(c *fiber.Ctx) error {
 	thingID, err := pathID(c, "id")
 	if err != nil {
-		log.Printf("registry: credential list rejected reason=invalid thing id value=%q", c.Params("id"))
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	items, err := h.svc.List(c.UserContext(), thingID)
 	if err != nil {
@@ -45,13 +41,11 @@ func (h *CredentialHandler) List(c *fiber.Ctx) error {
 func (h *CredentialHandler) Revoke(c *fiber.Ctx) error {
 	thingID, err := pathID(c, "id")
 	if err != nil {
-		log.Printf("registry: credential revoke rejected reason=invalid thing id value=%q", c.Params("id"))
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	credentialID, err := pathID(c, "credentialId")
 	if err != nil {
-		log.Printf("registry: credential revoke rejected thing_id=%s reason=invalid credential id value=%q", thingID, c.Params("credentialId"))
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	item, err := h.svc.Revoke(c.UserContext(), thingID, credentialID)
 	if err != nil {

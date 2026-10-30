@@ -17,7 +17,7 @@ func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
 
-	db, err := database.Connect(cfg.Database)
+	db, err := database.ConnectWait(cfg.Database)
 	if err != nil {
 		log.Fatalf("registry: %v", err)
 	}
@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("registry: migrate: %v", err)
 	}
 
-	redisClient, err := database.ConnectRedis(cfg.Redis)
+	redisClient, err := database.ConnectRedisWait(cfg.Redis)
 	if err != nil {
 		log.Fatalf("registry: %v", err)
 	}

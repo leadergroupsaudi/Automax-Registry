@@ -18,7 +18,7 @@ func NewChannelHandler(svc *services.ChannelService) *ChannelHandler {
 func (h *ChannelHandler) Create(c *fiber.Ctx) error {
 	var req models.ChannelWriteRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	channel, err := h.svc.Create(c.UserContext(), req)
 	if err != nil {
@@ -30,11 +30,11 @@ func (h *ChannelHandler) Create(c *fiber.Ctx) error {
 func (h *ChannelHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.ChannelWriteRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	channel, err := h.svc.Update(c.UserContext(), id, req)
 	if err != nil {
@@ -46,7 +46,7 @@ func (h *ChannelHandler) Update(c *fiber.Ctx) error {
 func (h *ChannelHandler) Delete(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	if err := h.svc.Delete(c.UserContext(), id); err != nil {
 		return writeServiceErr(c, err)
@@ -57,7 +57,7 @@ func (h *ChannelHandler) Delete(c *fiber.Ctx) error {
 func (h *ChannelHandler) Get(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	channel, err := h.svc.Get(c.UserContext(), id)
 	if err != nil {

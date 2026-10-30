@@ -18,11 +18,11 @@ func NewACLHandler(svc *services.ACLService) *ACLHandler {
 func (h *ACLHandler) Create(c *fiber.Ctx) error {
 	channelID, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.ChannelACLCreateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	acl, err := h.svc.Create(c.UserContext(), channelID, req)
 	if err != nil {
@@ -34,15 +34,15 @@ func (h *ACLHandler) Create(c *fiber.Ctx) error {
 func (h *ACLHandler) Update(c *fiber.Ctx) error {
 	channelID, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	aclID, err := pathID(c, "aclId")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	var req models.ChannelACLUpdateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	acl, err := h.svc.Update(c.UserContext(), channelID, aclID, req)
 	if err != nil {
@@ -54,11 +54,11 @@ func (h *ACLHandler) Update(c *fiber.Ctx) error {
 func (h *ACLHandler) Delete(c *fiber.Ctx) error {
 	channelID, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	aclID, err := pathID(c, "aclId")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	if err := h.svc.Delete(c.UserContext(), channelID, aclID); err != nil {
 		return writeServiceErr(c, err)
@@ -69,7 +69,7 @@ func (h *ACLHandler) Delete(c *fiber.Ctx) error {
 func (h *ACLHandler) List(c *fiber.Ctx) error {
 	channelID, err := pathID(c, "id")
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid id")
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
 	rows, err := h.svc.List(c.UserContext(), channelID)
 	if err != nil {

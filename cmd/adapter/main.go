@@ -22,7 +22,7 @@ func main() {
 	host := env("ADAPTER_HOST", "0.0.0.0")
 	token := strings.TrimSpace(os.Getenv("INGEST_TOKEN"))
 
-	db, err := database.Connect(cfg.Database)
+	db, err := database.ConnectWait(cfg.Database)
 	if err != nil {
 		log.Fatalf("adapter: %v", err)
 	}
@@ -30,7 +30,7 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		log.Fatalf("adapter: migrate: %v", err)
 	}
-	redisClient, err := database.ConnectRedis(cfg.Redis)
+	redisClient, err := database.ConnectRedisWait(cfg.Redis)
 	if err != nil {
 		log.Fatalf("adapter: %v", err)
 	}

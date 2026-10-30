@@ -26,11 +26,12 @@ func NewPositionHandler(svc *services.PositionService, token string) *PositionHa
 
 func (h *PositionHandler) Ingest(c *fiber.Ctx) error {
 	if !bearerOK(c.Get(fiber.HeaderAuthorization), h.token) {
-		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "unauthorized")
+		log.Printf("registry: %s %s rejected status=401 reason=missing or invalid bearer token", c.Method(), c.Path())
+		return utils.ErrorResponse(c, fiber.StatusUnauthorized, "missing or invalid bearer token")
 	}
 	req, ignored, err := decodePosition(c.Body())
 	if err != nil {
-		return utils.ErrorResponse(c, fiber.StatusBadRequest, "invalid request body")
+		return badJSON(c)
 	}
 	if len(ignored) > 0 {
 		log.Printf("registry: position fields ignored names=%s", strings.Join(ignored, ","))
