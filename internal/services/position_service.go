@@ -18,13 +18,27 @@ type PositionStore interface {
 	SaveLatest(ctx context.Context, deviceID, deviceName string, latitude, longitude float64, fixTime time.Time) (wrote bool, err error)
 }
 
+// ThingCoordinateWriter copies a stored live fix onto the linked registry thing.
+type ThingCoordinateWriter interface {
+	Apply(ctx context.Context, deviceID string, latitude, longitude float64) error
+}
+
 type PositionService struct {
-	store PositionStore
-	now   func() time.Time
+	store  PositionStore
+	things ThingCoordinateWriter
+	now    func() time.Time
 }
 
 func NewPositionService(store PositionStore) *PositionService {
 	return &PositionService{store: store, now: time.Now}
+}
+
+// UseThingCoordinates updates the linked thing after a newer fix is stored.
+func (s *PositionService) UseThingCoordinates(w ThingCoordinateWriter) {
+	if s == nil {
+		return
+	}
+	s.things = w
 }
 
 // Ingest accepts one live fix. A false valid flag and an older fix both succeed without writing.
@@ -69,6 +83,13 @@ func (s *PositionService) Ingest(ctx context.Context, req models.PositionIngestR
 	}
 	log.Printf("registry: position stored device_id=%s device_name=%s lat=%v lng=%v fix_time=%s",
 		deviceID, deviceName, lat, lng, fix.Format(time.RFC3339))
+	if s.things == nil {
+		return nil
+	}
+	if err := s.things.Apply(ctx, deviceID, lat, lng); err != nil {
+		log.Printf("registry: thing coordinates failed device_id=%s err=%v", deviceID, err)
+		return err
+	}
 	return nil
 }
 

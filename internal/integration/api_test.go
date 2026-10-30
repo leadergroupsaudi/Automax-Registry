@@ -157,12 +157,12 @@ func TestThingRoutes(t *testing.T) {
 	}
 	thing := dataObject(t, created)
 	thingID := dataID(t, created)
-	for _, key := range []string{"id", "name", "type", "is_trackable", "department_id", "group_id", "metadata", "created_at", "updated_at"} {
+	for _, key := range []string{"id", "name", "type", "is_trackable", "department_id", "group_id", "latitude", "longitude", "metadata", "created_at", "updated_at"} {
 		if _, ok := thing[key]; !ok {
 			t.Fatalf("missing %s in %#v", key, thing)
 		}
 	}
-	if thing["name"] != "van" || thing["type"] != "vehicle" || thing["is_trackable"] != true || thing["department_id"] != dept || thing["group_id"] != groupID {
+	if thing["name"] != "van" || thing["type"] != "vehicle" || thing["is_trackable"] != true || thing["department_id"] != dept || thing["group_id"] != groupID || thing["latitude"] != nil || thing["longitude"] != nil {
 		t.Fatalf("thing %#v", thing)
 	}
 	meta, ok := thing["metadata"].(map[string]any)

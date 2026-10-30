@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/automax/registry/internal/models"
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ type ThingRepository interface {
 	List(ctx context.Context, filter models.ThingListFilter) ([]models.Thing, error)
 	BlockingRefCount(ctx context.Context, id uuid.UUID) (int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
+	UpdateCoordinates(ctx context.Context, id uuid.UUID, latitude, longitude float64) error
 }
 
 type thingRepository struct{ db *gorm.DB }
@@ -78,6 +80,21 @@ func (r *thingRepository) BlockingRefCount(ctx context.Context, id uuid.UUID) (i
 		return 0, err
 	}
 	return creds + refs, nil
+}
+
+func (r *thingRepository) UpdateCoordinates(ctx context.Context, id uuid.UUID, latitude, longitude float64) error {
+	res := r.db.WithContext(ctx).Model(&models.Thing{}).Where("id = ?", id).Updates(map[string]any{
+		"latitude":   latitude,
+		"longitude":  longitude,
+		"updated_at": time.Now().UTC(),
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *thingRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {

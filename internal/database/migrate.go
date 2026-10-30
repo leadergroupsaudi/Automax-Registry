@@ -8,10 +8,11 @@ import (
 	"gorm.io/gorm"
 )
 
-const migrationVersion = "0001_registry_schema"
-
 //go:embed sql/0001_registry_schema.sql
-var migrationSQL string
+var migration0001 string
+
+//go:embed sql/0002_thing_coordinates.sql
+var migration0002 string
 
 func Migrate(db *gorm.DB) error {
 	if err := db.Exec(`
@@ -22,22 +23,37 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("schema_migrations: %w", err)
 	}
 
-	var applied int64
-	if err := db.Raw(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, migrationVersion).Scan(&applied).Error; err != nil {
-		return fmt.Errorf("check migration: %w", err)
+	migrations := []struct {
+		version string
+		sql     string
+	}{
+		{"0001_registry_schema", migration0001},
+		{"0002_thing_coordinates", migration0002},
 	}
-	if applied > 0 {
-		return nil
+	for _, m := range migrations {
+		var applied int64
+		if err := db.Raw(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&applied).Error; err != nil {
+			return fmt.Errorf("check migration %s: %w", m.version, err)
+		}
+		if applied > 0 {
+			continue
+		}
+		if err := applyMigration(db, m.version, m.sql); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
+func applyMigration(db *gorm.DB, version, script string) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		for _, stmt := range splitSQL(migrationSQL) {
+		for _, stmt := range splitSQL(script) {
 			if err := tx.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("migration %s: %w", migrationVersion, err)
+				return fmt.Errorf("migration %s: %w", version, err)
 			}
 		}
-		if err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, migrationVersion).Error; err != nil {
-			return fmt.Errorf("record migration: %w", err)
+		if err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version).Error; err != nil {
+			return fmt.Errorf("record migration %s: %w", version, err)
 		}
 		return nil
 	})

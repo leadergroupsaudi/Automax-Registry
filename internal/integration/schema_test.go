@@ -18,6 +18,7 @@ func TestSchemaHasSixTablesAndRealForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTables := []string{"channel_acl", "channels", "device_credentials", "groups", "thing_external_refs", "things"}
+	assertThingCoordinateColumns(t)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
 		t.Fatalf("tables = %v", tables)
 	}
@@ -148,6 +149,32 @@ func TestDatabaseRejectsBrokenForeignKeys(t *testing.T) {
 	err = db.Exec(`DELETE FROM things WHERE id = ?`, thingID).Error
 	if pgCode(err) != "23503" {
 		t.Fatalf("delete thing with credential: code %s err %v", pgCode(err), err)
+	}
+}
+
+func assertThingCoordinateColumns(t *testing.T) {
+	t.Helper()
+	type col struct {
+		Name     string `gorm:"column:column_name"`
+		Nullable string `gorm:"column:is_nullable"`
+		Type     string `gorm:"column:data_type"`
+	}
+	var cols []col
+	err := db.Raw(`
+		SELECT column_name, is_nullable, data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'things' AND column_name IN ('latitude', 'longitude')
+		ORDER BY column_name`).Scan(&cols).Error
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 2 || cols[0].Name != "latitude" || cols[1].Name != "longitude" {
+		t.Fatalf("coordinate columns %#v", cols)
+	}
+	for _, c := range cols {
+		if c.Nullable != "YES" || c.Type != "double precision" {
+			t.Fatalf("column %#v", c)
+		}
 	}
 }
 

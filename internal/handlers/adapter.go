@@ -12,6 +12,17 @@ import (
 
 // NewAdapter is the Caugar position process. It does not serve registry routes.
 func NewAdapter(token string, store services.PositionStore) *fiber.App {
+	return NewAdapterWithThings(token, store, nil)
+}
+
+// NewAdapterWithThings stores the live fix and copies it onto the linked thing.
+func NewAdapterWithThings(token string, store services.PositionStore, things services.ThingCoordinateWriter) *fiber.App {
+	svc := services.NewPositionService(store)
+	svc.UseThingCoordinates(things)
+	return newAdapter(token, svc)
+}
+
+func newAdapter(token string, svc *services.PositionService) *fiber.App {
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -30,6 +41,6 @@ func NewAdapter(token string, store services.PositionStore) *fiber.App {
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return utils.SuccessResponse(c, fiber.StatusOK, "ok", fiber.Map{"service": "adapter"})
 	})
-	app.Post("/ingest/positions", NewPositionHandler(services.NewPositionService(store), token).Ingest)
+	app.Post("/ingest/positions", NewPositionHandler(svc, token).Ingest)
 	return app
 }

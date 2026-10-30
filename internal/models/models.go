@@ -32,6 +32,8 @@ type Thing struct {
 	IsTrackable  bool       `gorm:"column:is_trackable;not null;default:false" json:"is_trackable"`
 	DepartmentID uuid.UUID  `gorm:"column:department_id;type:uuid;not null" json:"department_id"`
 	GroupID      *uuid.UUID `gorm:"column:group_id;type:uuid" json:"group_id"`
+	Latitude     *float64   `gorm:"column:latitude" json:"latitude"`
+	Longitude    *float64   `gorm:"column:longitude" json:"longitude"`
 	Metadata     JSON       `gorm:"column:metadata;type:jsonb;not null;default:'{}'" json:"metadata"`
 	CreatedAt    time.Time  `gorm:"column:created_at;not null;autoCreateTime" json:"created_at"`
 	UpdatedAt    time.Time  `gorm:"column:updated_at;not null;autoUpdateTime" json:"updated_at"`
@@ -73,6 +75,8 @@ type ThingResponse struct {
 	IsTrackable  bool       `json:"is_trackable"`
 	DepartmentID uuid.UUID  `json:"department_id"`
 	GroupID      *uuid.UUID `json:"group_id"`
+	Latitude     *float64   `json:"latitude"`
+	Longitude    *float64   `json:"longitude"`
 	Metadata     JSON       `json:"metadata"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -90,6 +94,8 @@ func (t Thing) Response() ThingResponse {
 		IsTrackable:  t.IsTrackable,
 		DepartmentID: t.DepartmentID,
 		GroupID:      t.GroupID,
+		Latitude:     t.Latitude,
+		Longitude:    t.Longitude,
 		Metadata:     meta,
 		CreatedAt:    t.CreatedAt,
 		UpdatedAt:    t.UpdatedAt,
