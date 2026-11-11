@@ -10,10 +10,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// ErrAmbiguousExternalRef means one Caugar device id is linked to more than one thing.
+// ErrAmbiguousExternalRef means one Caguar device id is linked to more than one thing.
 var ErrAmbiguousExternalRef = errors.New("ambiguous external ref")
 
-// LinkedThing is the registry thing behind a Caugar device id.
+// LinkedThing is the registry thing behind a Caguar device id.
 type LinkedThing struct {
 	ThingID     uuid.UUID
 	IsTrackable bool

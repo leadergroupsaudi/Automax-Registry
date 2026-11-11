@@ -17,6 +17,7 @@ type ThingRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*models.Thing, error)
 	List(ctx context.Context, filter models.ThingListFilter) ([]models.Thing, error)
 	BlockingRefCount(ctx context.Context, id uuid.UUID) (int64, error)
+	ResourceCount(ctx context.Context, id uuid.UUID) (int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	UpdateCoordinates(ctx context.Context, id uuid.UUID, latitude, longitude float64) error
 }
@@ -95,6 +96,12 @@ func (r *thingRepository) UpdateCoordinates(ctx context.Context, id uuid.UUID, l
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+func (r *thingRepository) ResourceCount(ctx context.Context, id uuid.UUID) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Table("resource").Where("thing_id = ?", id).Count(&n).Error
+	return n, err
 }
 
 func (r *thingRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {

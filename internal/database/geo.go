@@ -10,7 +10,7 @@ import (
 
 const (
 	// GeoDevicesKey is the Redis GEO set of latest device positions.
-	// The member is the Caugar device id. Longitude is stored first.
+	// The member is the Caguar device id. Longitude is stored first.
 	GeoDevicesKey = "geo:devices"
 	// DevicePosPrefix is the hash that holds freshness for one device: device:pos:{deviceId}.
 	DevicePosPrefix = "device:pos:"
@@ -32,7 +32,7 @@ end
 return 1
 `)
 
-// GeoStore keeps the latest position for each Caugar device id.
+// GeoStore keeps the latest position for each Caguar device id.
 type GeoStore struct {
 	client *redis.Client
 }

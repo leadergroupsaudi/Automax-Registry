@@ -12,6 +12,8 @@ type Config struct {
 	Redis    RedisConfig
 	NATS     NATSConfig
 	Ingest   IngestConfig
+	Geo      GeoConfig
+	Caguar   CaguarConfig
 }
 
 type ServerConfig struct {
@@ -62,6 +64,19 @@ type IngestConfig struct {
 	System string
 }
 
+// GeoConfig is the search radius for FindNearestAvailable, in meters.
+type GeoConfig struct {
+	RadiusMeters float64
+}
+
+// CaguarConfig is the portal that receives device and driver registration.
+type CaguarConfig struct {
+	BaseURL  string
+	Token    string
+	Username string
+	Password string
+}
+
 func Load() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -90,6 +105,15 @@ func Load() *Config {
 			Token:  env("INGEST_TOKEN", ""),
 			System: env("INGEST_EXTERNAL_SYSTEM", "traccar-go"),
 		},
+		Geo: GeoConfig{
+			RadiusMeters: envFloat("GEO_RADIUS_METERS", 50000),
+		},
+		Caguar: CaguarConfig{
+			BaseURL:  env("CAGUAR_BASE_URL", ""),
+			Token:    env("CAGUAR_TOKEN", ""),
+			Username: env("CAGUAR_USERNAME", ""),
+			Password: env("CAGUAR_PASSWORD", ""),
+		},
 	}
 }
 
@@ -107,6 +131,18 @@ func envInt(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
 		return fallback
 	}
 	return n

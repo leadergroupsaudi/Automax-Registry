@@ -58,6 +58,12 @@ func writeServiceErr(c *fiber.Ctx, err error) error {
 		case services.KindConflict:
 			log.Printf("registry: %s %s rejected status=409 reason=%s", c.Method(), c.Path(), se.Message)
 			return utils.ErrorResponse(c, fiber.StatusConflict, se.Message)
+		case services.KindUnavailable:
+			log.Printf("registry: %s %s rejected status=503 reason=%s", c.Method(), c.Path(), se.Message)
+			return utils.ErrorResponse(c, fiber.StatusServiceUnavailable, se.Message)
+		case services.KindUpstream:
+			log.Printf("registry: %s %s rejected status=502 reason=%s", c.Method(), c.Path(), se.Message)
+			return utils.ErrorResponse(c, fiber.StatusBadGateway, se.Message)
 		}
 	}
 	return utils.InternalErrorResponse(c, err, "internal server error")
@@ -95,6 +101,16 @@ func idLabel(path, param string) string {
 		return "acl id"
 	}
 	switch {
+	case strings.Contains(path, "/resource-shift-assignments/"):
+		return "assignment id"
+	case strings.Contains(path, "/resource-types/"):
+		return "resource type id"
+	case strings.Contains(path, "/service-points/"):
+		return "service point id"
+	case strings.Contains(path, "/shifts/"):
+		return "shift id"
+	case strings.Contains(path, "/resources/"):
+		return "resource id"
 	case strings.Contains(path, "/groups/"):
 		return "group id"
 	case strings.Contains(path, "/channels/"):
@@ -111,4 +127,13 @@ func clip(raw string) string {
 		return raw[:80]
 	}
 	return raw
+}
+
+func loggedQueryID(c *fiber.Ctx, name string) (*uuid.UUID, error) {
+	id, err := optionalUUIDQuery(c, name)
+	if err != nil {
+		log.Printf("registry: %s %s rejected status=400 reason=%s", c.Method(), c.Path(), err.Error())
+		return nil, err
+	}
+	return id, nil
 }

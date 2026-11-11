@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// DeviceID is the Caugar device id. Their payload may send it as a string or a number.
+// DeviceID is the Caguar device id. Their payload may send it as a string or a number.
 type DeviceID string
 
 func (d *DeviceID) UnmarshalJSON(raw []byte) error {
@@ -49,7 +49,7 @@ func formatDeviceNumber(n json.Number) string {
 	return n.String()
 }
 
-// PositionIngestRequest is the live-position body Caugar POSTs to the adapter.
+// PositionIngestRequest is the live-position body Caguar POSTs to the adapter.
 type PositionIngestRequest struct {
 	DeviceID   DeviceID `json:"deviceId"`
 	DeviceName string   `json:"deviceName"`
@@ -59,7 +59,7 @@ type PositionIngestRequest struct {
 	Valid      *bool    `json:"valid"`
 }
 
-// ExternalRefRequest links a registry thing to a Caugar device id.
+// ExternalRefRequest links a registry thing to a Caguar device id.
 type ExternalRefRequest struct {
 	ExternalSystem string `json:"external_system"`
 	ExternalID     string `json:"external_id"`

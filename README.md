@@ -122,7 +122,7 @@ INGEST_EXTERNAL_SYSTEM=traccar-go
 
 ## Live positions
 
-The adapter is a separate process from the registry API. Caugar POSTs the latest fix to `POST http://localhost:8083/ingest/positions` with `Authorization: Bearer <INGEST_TOKEN>`. The body can be flat JSON or Traccar's `{"position":{...}}` forwarder body. The adapter writes Redis GEO key `geo:devices` and hash `device:pos:{deviceId}` using the `deviceId` from the body. A new thing has `latitude` and `longitude` set to null. When that device id is linked with `POST /registry/things/:id/external-refs`, a newer fix also writes those columns on the thing. A newer `fixTime` replaces the stored point. `valid: false` and an older `fixTime` return `204` and leave Redis unchanged. Start it with `go run ./cmd/adapter/main.go` while Postgres, Redis, and the registry API are already running.
+The adapter is a separate process from the registry API. Caguar POSTs the latest fix to `POST http://localhost:8083/ingest/positions` with `Authorization: Bearer <INGEST_TOKEN>`. The body can be flat JSON or Traccar's `{"position":{...}}` forwarder body. The adapter writes Redis GEO key `geo:devices` and hash `device:pos:{deviceId}` using the `deviceId` from the body. A new thing has `latitude` and `longitude` set to null. When that device id is linked with `POST /registry/things/:id/external-refs`, a newer fix also writes those columns on the thing. A newer `fixTime` replaces the stored point. `valid: false` and an older `fixTime` return `204` and leave Redis unchanged. Start it with `go run ./cmd/adapter/main.go` while Postgres, Redis, and the registry API are already running.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8083/ingest/positions \
@@ -138,7 +138,7 @@ redis-cli -p 6382 GEOPOS geo:devices 428976543
 redis-cli -p 6382 HGETALL device:pos:428976543
 ```
 
-Caugar's server cannot call `localhost`. Use the curl above locally. After this service is deployed, send Caugar the public `https` URL, the bearer token, and the JSON body. Replace `INGEST_TOKEN` before that URL is public.
+Caguar's server cannot call `localhost`. Use the curl above locally. After this service is deployed, send Caguar the public `https` URL, the bearer token, and the JSON body. Replace `INGEST_TOKEN` before that URL is public.
 
 ### Restart
 

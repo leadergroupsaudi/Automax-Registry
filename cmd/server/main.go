@@ -6,10 +6,13 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/automax/registry/internal/caguar"
 	"github.com/automax/registry/internal/config"
 	"github.com/automax/registry/internal/database"
 	"github.com/automax/registry/internal/handlers"
 	"github.com/automax/registry/internal/natsclient"
+	"github.com/automax/registry/internal/repository"
+	"github.com/automax/registry/internal/services"
 	"github.com/joho/godotenv"
 )
 
@@ -36,11 +39,15 @@ func main() {
 	nc := natsclient.Connect(cfg.NATS.URL)
 	defer nc.Close()
 
+	nearest := services.NewNearestService(database.NewResourceGeoStore(redisClient), repository.NewResourceLookup(db), cfg.Geo.RadiusMeters)
+	nearest.Listen(nc)
+	defer nearest.Close()
+
 	app := handlers.NewApp(db, nc, handlers.HealthTargets{
 		DB:            db,
 		Redis:         redisClient,
 		NATSConnected: nc.Connected,
-	}, cfg.Server.AllowOrigins)
+	}, cfg.Server.AllowOrigins, nearest, caguar.NewAccount(cfg.Caguar.BaseURL, cfg.Caguar.Token, cfg.Caguar.Username, cfg.Caguar.Password))
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 
 	go func() {

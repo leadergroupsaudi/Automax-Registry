@@ -39,8 +39,10 @@ func main() {
 	if token == "" {
 		log.Println("adapter: INGEST_TOKEN is empty; position ingest will reject requests")
 	}
-	things := services.NewThingCoordinateWriter(cfg.Ingest.System, repository.NewExternalRefRepository(db), repository.NewThingRepository(db))
-	app := handlers.NewAdapterWithThings(token, database.NewGeoStore(redisClient), things)
+	refs := repository.NewExternalRefRepository(db)
+	things := services.NewThingCoordinateWriter(cfg.Ingest.System, refs, repository.NewThingRepository(db))
+	fixes := services.NewResourceFixWriter(cfg.Ingest.System, refs, repository.NewResourceLookup(db), database.NewResourceGeoStore(redisClient))
+	app := handlers.NewAdapterWithLiveFixes(token, database.NewGeoStore(redisClient), things, fixes)
 	addr := host + ":" + port
 
 	go func() {

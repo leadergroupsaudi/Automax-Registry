@@ -49,6 +49,9 @@ func (s *ThingService) Create(ctx context.Context, req models.ThingCreateRequest
 		if repository.IsForeignKeyViolation(err) {
 			return nil, Invalid("validation failed", map[string]string{"group_id": "group not found"})
 		}
+		if repository.IsUniqueViolation(err) {
+			return nil, Conflict("a thing with this name already exists")
+		}
 		return nil, err
 	}
 	s.publish(*thing, models.SubjectThingCreated)
@@ -89,6 +92,9 @@ func (s *ThingService) Update(ctx context.Context, id uuid.UUID, req models.Thin
 		if repository.IsForeignKeyViolation(err) {
 			return nil, Invalid("validation failed", map[string]string{"group_id": "group not found"})
 		}
+		if repository.IsUniqueViolation(err) {
+			return nil, Conflict("a thing with this name already exists")
+		}
 		return nil, err
 	}
 	s.publish(*thing, models.SubjectThingUpdated)
@@ -107,6 +113,16 @@ func (s *ThingService) Delete(ctx context.Context, id uuid.UUID) error {
 	n, err := s.things.BlockingRefCount(ctx, id)
 	if err != nil {
 		return err
+	}
+	resources, err := s.things.ResourceCount(ctx, id)
+	if err != nil {
+		return err
+	}
+	if n > 0 && resources > 0 {
+		return Conflict("thing still has credentials or external references and is a resource")
+	}
+	if resources > 0 {
+		return Conflict("thing is a resource")
 	}
 	if n > 0 {
 		return Conflict("thing still has credentials or external references")

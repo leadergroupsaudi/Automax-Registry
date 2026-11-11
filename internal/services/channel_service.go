@@ -24,7 +24,7 @@ func (s *ChannelService) Create(ctx context.Context, req models.ChannelWriteRequ
 	}
 	channel := &models.Channel{Name: name}
 	if err := s.repo.Create(ctx, channel); err != nil {
-		return nil, err
+		return nil, asDuplicateName(err, "a channel with this name already exists")
 	}
 	resp := channel.Response()
 	return &resp, nil
@@ -45,7 +45,7 @@ func (s *ChannelService) Update(ctx context.Context, id uuid.UUID, req models.Ch
 	}
 	channel.Name = name
 	if err := s.repo.Update(ctx, channel); err != nil {
-		return nil, err
+		return nil, asDuplicateName(err, "a channel with this name already exists")
 	}
 	resp := channel.Response()
 	return &resp, nil

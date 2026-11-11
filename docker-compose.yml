@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgis/postgis:16-3.5-alpine
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-registry}
@@ -53,6 +53,11 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: nats://nats:4222
+      GEO_RADIUS_METERS: ${GEO_RADIUS_METERS:-50000}
+      CAGUAR_BASE_URL: ${CAGUAR_BASE_URL:-}
+      CAGUAR_TOKEN: ${CAGUAR_TOKEN:-}
+      CAGUAR_USERNAME: ${CAGUAR_USERNAME:-}
+      CAGUAR_PASSWORD: ${CAGUAR_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy

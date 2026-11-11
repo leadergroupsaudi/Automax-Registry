@@ -38,6 +38,8 @@ type Client struct {
 	js   nats.JetStreamContext
 	stop chan struct{}
 	once sync.Once
+
+	hooks []func()
 }
 
 func Connect(url string) *Client {
@@ -51,6 +53,30 @@ func Connect(url string) *Client {
 	}
 	go c.reconnectLoop()
 	return c
+}
+
+// AfterConnect runs fn after each successful connect, including a reconnect
+// that replaces the connection. If the client is already connected, fn runs now.
+func (c *Client) AfterConnect(fn func()) {
+	if c == nil || fn == nil {
+		return
+	}
+	c.mu.Lock()
+	c.hooks = append(c.hooks, fn)
+	connected := c.nc != nil && c.nc.IsConnected()
+	c.mu.Unlock()
+	if connected {
+		fn()
+	}
+}
+
+func (c *Client) notifyConnected() {
+	c.mu.RLock()
+	hooks := append([]func(){}, c.hooks...)
+	c.mu.RUnlock()
+	for _, fn := range hooks {
+		fn()
+	}
 }
 
 func (c *Client) Connected() bool {
@@ -276,6 +302,7 @@ func (c *Client) tryConnect() bool {
 		old.Close()
 	}
 	log.Printf("registry: NATS connected to %s", nc.ConnectedUrl())
+	c.notifyConnected()
 	return true
 }
 

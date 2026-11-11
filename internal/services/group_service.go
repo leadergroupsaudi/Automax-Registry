@@ -40,6 +40,9 @@ func (s *GroupService) Create(ctx context.Context, req models.GroupWriteRequest)
 		if repository.IsForeignKeyViolation(err) {
 			return nil, Invalid("validation failed", map[string]string{"parent_group_id": "parent group not found"})
 		}
+		if repository.IsUniqueViolation(err) {
+			return nil, Conflict("a group with this name already exists")
+		}
 		return nil, err
 	}
 	resp := group.Response()
@@ -75,6 +78,9 @@ func (s *GroupService) Update(ctx context.Context, id uuid.UUID, req models.Grou
 	if err := s.repo.Update(ctx, group); err != nil {
 		if repository.IsForeignKeyViolation(err) {
 			return nil, Invalid("validation failed", map[string]string{"parent_group_id": "parent group not found"})
+		}
+		if repository.IsUniqueViolation(err) {
+			return nil, Conflict("a group with this name already exists")
 		}
 		return nil, err
 	}

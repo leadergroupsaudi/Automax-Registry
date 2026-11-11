@@ -12,7 +12,7 @@ import (
 	"github.com/automax/registry/internal/models"
 )
 
-// PositionStore writes the latest position for a Caugar device id.
+// PositionStore writes the latest position for a Caguar device id.
 // wrote is false when fixTime is not newer than the stored point.
 type PositionStore interface {
 	SaveLatest(ctx context.Context, deviceID, deviceName string, latitude, longitude float64, fixTime time.Time) (wrote bool, err error)
@@ -23,10 +23,16 @@ type ThingCoordinateWriter interface {
 	Apply(ctx context.Context, deviceID string, latitude, longitude float64) error
 }
 
+// ResourceFixWriter copies one live fix onto the resource GEO set.
+type ResourceFixApplier interface {
+	ApplyFix(ctx context.Context, deviceID string, latitude, longitude float64, fixTime time.Time) error
+}
+
 type PositionService struct {
-	store  PositionStore
-	things ThingCoordinateWriter
-	now    func() time.Time
+	store     PositionStore
+	things    ThingCoordinateWriter
+	resources ResourceFixApplier
+	now       func() time.Time
 }
 
 func NewPositionService(store PositionStore) *PositionService {
@@ -39,6 +45,14 @@ func (s *PositionService) UseThingCoordinates(w ThingCoordinateWriter) {
 		return
 	}
 	s.things = w
+}
+
+// UseResourceFix also writes resource:geo when a linked resource exists.
+func (s *PositionService) UseResourceFix(w ResourceFixApplier) {
+	if s == nil {
+		return
+	}
+	s.resources = w
 }
 
 // Ingest accepts one live fix. A false valid flag and an older fix both succeed without writing.
@@ -79,15 +93,21 @@ func (s *PositionService) Ingest(ctx context.Context, req models.PositionIngestR
 	}
 	if !wrote {
 		log.Printf("registry: position not stored reason=stale device_id=%s fix_time=%s", deviceID, fix.Format(time.RFC3339))
+	} else {
+		log.Printf("registry: position stored device_id=%s device_name=%s lat=%v lng=%v fix_time=%s",
+			deviceID, deviceName, lat, lng, fix.Format(time.RFC3339))
+		if s.things != nil {
+			if err := s.things.Apply(ctx, deviceID, lat, lng); err != nil {
+				log.Printf("registry: thing coordinates failed device_id=%s err=%v", deviceID, err)
+				return err
+			}
+		}
+	}
+	if s.resources == nil {
 		return nil
 	}
-	log.Printf("registry: position stored device_id=%s device_name=%s lat=%v lng=%v fix_time=%s",
-		deviceID, deviceName, lat, lng, fix.Format(time.RFC3339))
-	if s.things == nil {
-		return nil
-	}
-	if err := s.things.Apply(ctx, deviceID, lat, lng); err != nil {
-		log.Printf("registry: thing coordinates failed device_id=%s err=%v", deviceID, err)
+	if err := s.resources.ApplyFix(ctx, deviceID, lat, lng, fix); err != nil {
+		log.Printf("registry: resource position failed device_id=%s err=%v", deviceID, err)
 		return err
 	}
 	return nil

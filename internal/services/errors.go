@@ -1,9 +1,13 @@
 package services
 
+import "github.com/automax/registry/internal/repository"
+
 const (
-	KindInvalid  = "invalid"
-	KindNotFound = "not_found"
-	KindConflict = "conflict"
+	KindInvalid     = "invalid"
+	KindNotFound    = "not_found"
+	KindConflict    = "conflict"
+	KindUnavailable = "unavailable"
+	KindUpstream    = "upstream"
 )
 
 type Error struct {
@@ -24,4 +28,19 @@ func NotFound(message string) *Error {
 
 func Conflict(message string) *Error {
 	return &Error{Kind: KindConflict, Message: message}
+}
+
+func Unavailable(message string) *Error {
+	return &Error{Kind: KindUnavailable, Message: message}
+}
+
+func Upstream(message string) *Error {
+	return &Error{Kind: KindUpstream, Message: message}
+}
+
+func asDuplicateName(err error, message string) error {
+	if repository.IsUniqueViolation(err) {
+		return Conflict(message)
+	}
+	return err
 }
