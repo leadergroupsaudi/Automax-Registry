@@ -34,7 +34,7 @@ services:
     command: ["-js", "-m", "8222"]
 
   api:
-    image: yashplg/automax31-registry:v1
+    image: yashplg/automax31-registry:latest
     restart: always
     ports:
       - "8082:8082"
@@ -57,7 +57,7 @@ services:
         condition: service_healthy
 
   adapter:
-    image: yashplg/automax31-http-adapter:v1
+    image: yashplg/automax31-http-adapter:latest
     restart: always
     ports:
       - "8083:8083"
