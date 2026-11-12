@@ -20,6 +20,12 @@ var migration0003 string
 //go:embed sql/0004_unique_names.sql
 var migration0004 string
 
+//go:embed sql/0005_dispatch_master.sql
+var migration0005 string
+
+//go:embed sql/0006_dispatch_screen.sql
+var migration0006 string
+
 func Migrate(db *gorm.DB) error {
 	if err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -37,6 +43,8 @@ func Migrate(db *gorm.DB) error {
 		{"0002_thing_coordinates", migration0002},
 		{"0003_dispatch_schema", migration0003},
 		{"0004_unique_names", migration0004},
+		{"0005_dispatch_master", migration0005},
+		{"0006_dispatch_screen", migration0006},
 	}
 	for _, m := range migrations {
 		var applied int64

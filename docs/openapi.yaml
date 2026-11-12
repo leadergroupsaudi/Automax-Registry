@@ -1,0 +1,2618 @@
+openapi: 3.0.3
+info:
+  title: Automax Registry and Dispatch
+  version: 1.0.0
+  description: |
+    HTTP API for the Automax Registry service (port 8082) and the position adapter (port 8083).
+
+    This file documents the routes that exist today. It is meant for the dispatcher web app and the driver mobile app discussion.
+
+    ## How a fire call is split across services
+
+    1. A citizen calls. The agent works in the dispatcher web app.
+    2. The agent creates the incident in **Automax-Backend** (`POST /api/v1/incidents`). That service is not this API.
+    3. This service answers "which fire station is nearest?" and "which vehicle (unit) is nearest and available?".
+    4. A **service point** is a station. A **resource** is a unit (a vehicle). The unit is also a registry **thing**.
+    5. A **shift** is the duty window (for example morning, MON–FRI, 08:00–16:00).
+    6. A **resource shift assignment** puts a driver (`user_id` from Automax-Backend) on a unit for a shift.
+    7. Live GPS comes from the Caguar tracker into the adapter, not from the phone.
+
+    ## What is not in this API yet
+
+    The database has a `dispatch_assignment` table (incident + unit, status `offered`, `accepted`, `rejected`, `expired`, `completed`, `cancelled`), but there is no HTTP route for it.
+
+    There is also no route for the driver job steps **on the way**, **reached**, **in progress**, and **job done**.
+    Resource status is only `available`, `offered`, `dispatched`, or `maintenance`.
+    Shift assignment status is only `scheduled`, `active`, `completed`, or `cancelled`.
+
+    Registry routes have no login. The mobile app should not call them directly until auth is added, or until Automax-Backend proxies them.
+
+    ## Response envelope
+
+    Success:
+
+    ```json
+    { "success": true, "message": "resource retrieved", "data": {} }
+    ```
+
+    Error:
+
+    ```json
+    { "success": false, "error": "validation failed", "errors": { "name": "name is required" } }
+    ```
+
+    `errors` is present only on field validation failures. Delete responses omit `data`.
+
+servers:
+  - url: http://localhost:8082
+    description: Registry and dispatch API
+  - url: http://localhost:8083
+    description: Position adapter (Caguar ingest only)
+
+tags:
+  - name: Health
+  - name: Things
+    description: Registry assets. A vehicle unit is a thing of type vehicle, then linked as a dispatch resource.
+  - name: Devices and drivers
+    description: Registers a vehicle or a driver in Caguar and, for a vehicle, creates the local thing.
+  - name: Credentials
+    description: Device API keys. The plaintext secret is returned only by the issue call.
+  - name: External refs
+    description: Links a thing to a Caguar device id so live GPS updates that thing.
+  - name: Channels
+  - name: Channel ACL
+  - name: Groups
+  - name: Resource types
+    description: Unit kinds inside a department, for example fire engine or ambulance.
+  - name: Resources
+    description: Units (vehicles) the dispatcher can send. Nearest lookup is the call-taking query.
+  - name: Service points
+    description: Stations. Nearest lookup is the fire-station query.
+  - name: Shifts
+    description: Duty windows. Not a driver's personal roster by itself.
+  - name: Shift assignments
+    description: Which driver is on which unit, for which shift.
+  - name: Positions
+    description: Adapter only. Caguar posts tracker fixes here.
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Service health
+      description: |
+        On port 8082, `data` is Postgres, Redis, and NATS, each `up` or `down`.
+        On port 8083, `data` is `{ "service": "adapter" }`.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is responding
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: "#/components/schemas/Health"
+                          - type: object
+                            properties:
+                              service:
+                                type: string
+                                example: adapter
+
+  /registry/things:
+    get:
+      tags: [Things]
+      summary: List things
+      operationId: listThings
+      parameters:
+        - $ref: "#/components/parameters/ThingType"
+        - $ref: "#/components/parameters/DepartmentId"
+        - $ref: "#/components/parameters/GroupId"
+      responses:
+        "200":
+          description: Things retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Thing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Things]
+      summary: Create a thing
+      operationId: createThing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ThingWrite"
+            example:
+              name: Engine 12
+              type: vehicle
+              is_trackable: true
+              department_id: 11111111-1111-1111-1111-111111111111
+              metadata:
+                plate_number: ABC-1234
+      responses:
+        "201":
+          description: Thing created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Thing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /registry/things/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Things]
+      summary: Get a thing
+      operationId: getThing
+      responses:
+        "200":
+          description: Thing retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Thing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Things]
+      summary: Replace a thing
+      operationId: updateThing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ThingWrite"
+      responses:
+        "200":
+          description: Thing updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Thing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Things]
+      summary: Delete a thing
+      operationId: deleteThing
+      responses:
+        "200":
+          description: Thing deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /registry/things/{id}/external-refs:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [External refs]
+      summary: Link a thing to an external device id
+      description: Creates the link, or updates it when the same thing and external system already exist. Returns 201 when created and 200 when updated.
+      operationId: upsertExternalRef
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalRefWrite"
+            example:
+              external_system: traccar-go
+              external_id: "4289765883"
+      responses:
+        "200":
+          description: Existing link updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ExternalRef"
+        "201":
+          description: Link created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ExternalRef"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /registry/things/{id}/credentials:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Credentials]
+      summary: List credentials for a thing
+      description: Does not return the secret.
+      operationId: listCredentials
+      responses:
+        "200":
+          description: Credentials retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Credential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Credentials]
+      summary: Issue a credential
+      description: The only response that includes `api_secret`. Store it once. The body is empty.
+      operationId: issueCredential
+      responses:
+        "201":
+          description: Credential issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/CredentialIssued"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /registry/things/{id}/credentials/{credentialId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [Credentials]
+      summary: Revoke a credential
+      operationId: revokeCredential
+      responses:
+        "200":
+          description: Credential revoked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Credential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /registry/devices:
+    post:
+      tags: [Devices and drivers]
+      summary: Register a vehicle in Caguar and as a local thing
+      description: |
+        Requires Caguar to be configured. Creates a trackable thing of type `vehicle`, links `external_system=traccar-go` to `unique_id`, and registers the same device in Caguar.
+        `unique_id` or `uniqueId` is required. Plate must look like `ABC-1234` when sent.
+      operationId: registerDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRegistration"
+            example:
+              name: Engine 12
+              unique_id: "4289765883"
+              department_id: 11111111-1111-1111-1111-111111111111
+              tracker_type: gps
+              plate_number: ABC-1234
+              chassis_number: CH-100
+              phone: "+966500000000"
+              model: Fire engine
+              category: truck
+              disabled: false
+      responses:
+        "201":
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DeviceResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /registry/drivers:
+    post:
+      tags: [Devices and drivers]
+      summary: Register a driver name in Caguar
+      description: |
+        Sends the driver to Caguar only. It does not create an Automax user, a shift, or a unit assignment.
+        The driver the dispatcher assigns later is `user_id` from Automax-Backend, not this unique id.
+      operationId: registerDriver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DriverRegistration"
+            example:
+              name: Ali Hassan
+              unique_id: DRV-1001
+      responses:
+        "201":
+          description: Driver registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DriverResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /registry/channels:
+    get:
+      tags: [Channels]
+      summary: List channels
+      operationId: listChannels
+      responses:
+        "200":
+          description: Channels retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Channel"
+    post:
+      tags: [Channels]
+      summary: Create a channel
+      operationId: createChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelWrite"
+            example:
+              name: fire-ops
+      responses:
+        "201":
+          description: Channel created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /registry/channels/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Channels]
+      summary: Get a channel
+      operationId: getChannel
+      responses:
+        "200":
+          description: Channel retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Channels]
+      summary: Rename a channel
+      operationId: updateChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelWrite"
+      responses:
+        "200":
+          description: Channel updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Channels]
+      summary: Delete a channel
+      operationId: deleteChannel
+      responses:
+        "200":
+          description: Channel deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /registry/channels/{id}/acl:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Channel ACL]
+      summary: List ACL rows for a channel
+      operationId: listChannelAcl
+      responses:
+        "200":
+          description: ACL retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ChannelAcl"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Channel ACL]
+      summary: Grant a thing access to a channel
+      operationId: createChannelAcl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelAclCreate"
+      responses:
+        "201":
+          description: ACL created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ChannelAcl"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /registry/channels/{id}/acl/{aclId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: aclId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      tags: [Channel ACL]
+      summary: Update publish and subscribe flags
+      operationId: updateChannelAcl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelAclUpdate"
+      responses:
+        "200":
+          description: ACL updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ChannelAcl"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Channel ACL]
+      summary: Remove a thing from a channel
+      operationId: deleteChannelAcl
+      responses:
+        "200":
+          description: ACL deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /registry/groups:
+    get:
+      tags: [Groups]
+      summary: List groups
+      description: Omit `parent_group_id` to list every group. Pass the literal `null` to list only root groups.
+      operationId: listGroups
+      parameters:
+        - name: parent_group_id
+          in: query
+          schema:
+            type: string
+          description: UUID of the parent, or the literal `null` for roots.
+      responses:
+        "200":
+          description: Groups retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Group"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Groups]
+      summary: Create a group
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupWrite"
+            example:
+              name: Station 4
+              department_id: 11111111-1111-1111-1111-111111111111
+              parent_group_id: null
+      responses:
+        "201":
+          description: Group created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Group"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /registry/groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Groups]
+      summary: Get a group
+      operationId: getGroup
+      responses:
+        "200":
+          description: Group retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Group"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Groups]
+      summary: Replace a group
+      operationId: updateGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupWrite"
+      responses:
+        "200":
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Group"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Groups]
+      summary: Delete a group
+      operationId: deleteGroup
+      responses:
+        "200":
+          description: Group deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /dispatch/resource-types:
+    get:
+      tags: [Resource types]
+      summary: List resource types
+      description: Without page, data is the full array. With page, the response also includes page, limit, total_items, and total_pages. search matches name, code, and alt name.
+      operationId: listResourceTypes
+      parameters:
+        - $ref: "#/components/parameters/DepartmentId"
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        "200":
+          description: Resource types retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ResourceType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Resource types]
+      summary: Create a resource type
+      operationId: createResourceType
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceTypeWrite"
+            example:
+              department_id: 11111111-1111-1111-1111-111111111111
+              name: Fire engine
+              acceptance_timeout_seconds: 120
+      responses:
+        "201":
+          description: Resource type created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ResourceType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/resource-types/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Resource types]
+      summary: Get a resource type
+      operationId: getResourceType
+      responses:
+        "200":
+          description: Resource type retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ResourceType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Resource types]
+      summary: Replace a resource type
+      operationId: updateResourceType
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceTypeWrite"
+      responses:
+        "200":
+          description: Resource type updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ResourceType"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Resource types]
+      summary: Delete a resource type
+      operationId: deleteResourceType
+      responses:
+        "200":
+          description: Resource type deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/icons:
+    post:
+      tags: [Resources]
+      summary: Upload an icon
+      description: |
+        Multipart field `file`. PNG, JPG, or SVG, at most 2MB.
+        The response `data.path` is the value to store in a unit type or fire station `icon`.
+      operationId: uploadDispatchIcon
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Icon stored
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /dispatch/icons/{id}:
+    get:
+      tags: [Resources]
+      summary: Download an icon
+      operationId: getDispatchIcon
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Icon bytes
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/svg+xml:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /dispatch/resources:
+    get:
+      tags: [Resources]
+      summary: List units
+      description: |
+        Filter by station, type, status, driver, location, classification, or active-till date.
+        Status is `available`, `offered`, `dispatched`, or `maintenance`.
+        `search` matches name, plate, alternate name, radio id, and unit id.
+      operationId: listResources
+      parameters:
+        - name: resource_type_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: service_point_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ResourceStatus"
+        - name: driver_user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: location_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: classification_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: active_till_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Resources retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [Resources]
+      summary: Register a unit
+      description: |
+        `thing_id` must already exist. One thing can be only one resource.
+        Writing the resource copies type, station, and status onto that thing.
+      operationId: createResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceWrite"
+            example:
+              thing_id: 22222222-2222-2222-2222-222222222222
+              resource_type_id: 33333333-3333-3333-3333-333333333333
+              service_point_id: 44444444-4444-4444-4444-444444444444
+              status: available
+      responses:
+        "201":
+          description: Resource created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/resources/nearest:
+    get:
+      tags: [Resources]
+      summary: Nearest available units
+      description: |
+        Dispatcher call-taking query. Returns units that are available and on duty, ordered by distance from the incident.
+
+        `department_id` is required. `lat` may be sent as `latitude`, and `lng` as `longitude`.
+        `limit` defaults to 10. There is no upper cap in this route.
+      operationId: nearestResources
+      parameters:
+        - $ref: "#/components/parameters/Lat"
+        - $ref: "#/components/parameters/Lng"
+        - name: department_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: resource_type_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Nearest resources retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/NearestResource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /dispatch/resources/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Resources]
+      summary: Get a unit
+      operationId: getResource
+      responses:
+        "200":
+          description: Resource retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Resources]
+      summary: Replace a unit
+      description: Use this to move a unit to another station or to set `available`, `offered`, `dispatched`, or `maintenance`. This is not the driver job-step update.
+      operationId: updateResource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceWrite"
+      responses:
+        "200":
+          description: Resource updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Resource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Resources]
+      summary: Delete a unit
+      operationId: deleteResource
+      responses:
+        "200":
+          description: Resource deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/service-points:
+    get:
+      tags: [Service points]
+      summary: List stations
+      operationId: listServicePoints
+      responses:
+        "200":
+          description: Service points retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ServicePoint"
+    post:
+      tags: [Service points]
+      summary: Create a station
+      operationId: createServicePoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServicePointWrite"
+            example:
+              name: Fire Station 4
+              department_id: 11111111-1111-1111-1111-111111111111
+              location:
+                lat: 24.7136
+                lng: 46.6753
+      responses:
+        "201":
+          description: Service point created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ServicePoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/service-points/nearest:
+    get:
+      tags: [Service points]
+      summary: Nearest stations
+      description: |
+        Ordered by distance from the incident coordinates.
+        `resourceTypeId` and `resource_type_id` are both accepted and optional.
+        `limit` defaults to 10 and must be from 1 to 100.
+        This route does not filter by department.
+      operationId: nearestServicePoints
+      parameters:
+        - $ref: "#/components/parameters/Lat"
+        - $ref: "#/components/parameters/Lng"
+        - name: resourceTypeId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: resource_type_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Nearest service points retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/NearestServicePoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /dispatch/service-points/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Service points]
+      summary: Get a station
+      operationId: getServicePoint
+      responses:
+        "200":
+          description: Service point retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ServicePoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Service points]
+      summary: Replace a station
+      operationId: updateServicePoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServicePointWrite"
+      responses:
+        "200":
+          description: Service point updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ServicePoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Service points]
+      summary: Delete a station
+      description: |
+        Returns 409 while units still use this station as their home.
+        `force=true` detaches those units first, then deletes the station.
+      operationId: deleteServicePoint
+      parameters:
+        - name: force
+          in: query
+          schema:
+            type: boolean
+          description: When true, clear service_point_id on assigned units and then delete.
+      responses:
+        "200":
+          description: Service point deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/shifts:
+    get:
+      tags: [Shifts]
+      summary: List shifts
+      description: Returns every shift. There is no department or driver filter.
+      operationId: listShifts
+      responses:
+        "200":
+          description: Shifts retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Shift"
+    post:
+      tags: [Shifts]
+      summary: Create a shift
+      description: |
+        `days_of_week` is a comma-separated list of `MON,TUE,WED,THU,FRI,SAT,SUN`, at most 20 characters, with no repeats.
+        Times are `HH:MM` or `HH:MM:SS` and must differ. `is_active` defaults to true.
+      operationId: createShift
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShiftWrite"
+            example:
+              department_id: 11111111-1111-1111-1111-111111111111
+              name: Morning
+              start_time: "08:00"
+              end_time: "16:00"
+              days_of_week: MON,TUE,WED,THU,FRI
+              is_active: true
+      responses:
+        "201":
+          description: Shift created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Shift"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/shifts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Shifts]
+      summary: Get a shift
+      operationId: getShift
+      responses:
+        "200":
+          description: Shift retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Shift"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Shifts]
+      summary: Replace a shift
+      operationId: updateShift
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShiftWrite"
+      responses:
+        "200":
+          description: Shift updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Shift"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Shifts]
+      summary: Delete a shift
+      operationId: deleteShift
+      responses:
+        "200":
+          description: Shift deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/resource-shift-assignments:
+    get:
+      tags: [Shift assignments]
+      summary: List driver-to-unit assignments
+      description: Returns every assignment. There is no `user_id` filter, so the mobile app cannot ask for "my shift" with this route alone.
+      operationId: listAssignments
+      responses:
+        "200":
+          description: Assignments retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Assignment"
+    post:
+      tags: [Shift assignments]
+      summary: Assign a driver to a unit
+      description: |
+        This is the "agent assigns the driver" step.
+        `user_id` is the driver in Automax-Backend. `resource_id` is the unit. `shift_id` is optional.
+        Status is `scheduled`, `active`, `completed`, or `cancelled`. Default is `scheduled`.
+        `end_at` must be after `start_at` when both are set.
+      operationId: createAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentWrite"
+            example:
+              resource_id: 55555555-5555-5555-5555-555555555555
+              user_id: 66666666-6666-6666-6666-666666666666
+              shift_id: 77777777-7777-7777-7777-777777777777
+              start_at: "2026-11-10T08:00:00Z"
+              end_at: "2026-11-10T16:00:00Z"
+              status: scheduled
+      responses:
+        "201":
+          description: Assignment created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Assignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /dispatch/resource-shift-assignments/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [Shift assignments]
+      summary: Get one driver assignment
+      operationId: getAssignment
+      responses:
+        "200":
+          description: Assignment retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Assignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Shift assignments]
+      summary: Update a driver assignment
+      description: Changes duty status (`scheduled`, `active`, `completed`, `cancelled`). It does not record on-the-way, reached, in progress, or job done.
+      operationId: updateAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentWrite"
+      responses:
+        "200":
+          description: Assignment updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Assignment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [Shift assignments]
+      summary: Delete a driver assignment
+      operationId: deleteAssignment
+      responses:
+        "200":
+          description: Assignment deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ingest/positions:
+    post:
+      tags: [Positions]
+      summary: Ingest a live tracker fix
+      description: |
+        Caguar calls this. It is not a mobile-app endpoint.
+        Requires `Authorization: Bearer <INGEST_TOKEN>`.
+        A flat body or Traccar's `{"position":{...}}` body is accepted.
+        Success is HTTP 204 with an empty body. `valid: false` or an older `fixTime` is also 204 and does not replace the stored point.
+      operationId: ingestPosition
+      servers:
+        - url: http://localhost:8083
+      security:
+        - IngestBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PositionIngest"
+            example:
+              deviceId: "4289765883"
+              deviceName: Engine 12
+              latitude: 24.7136
+              longitude: 46.6753
+              fixTime: "2026-11-10T09:00:00Z"
+              valid: true
+      responses:
+        "204":
+          description: Fix accepted or ignored as stale
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    IngestBearer:
+      type: http
+      scheme: bearer
+      description: "INGEST_TOKEN for the position adapter only. Registry routes do not use this token."
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DepartmentId:
+      name: department_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    GroupId:
+      name: group_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    ThingType:
+      name: type
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Exact thing type, for example `vehicle`.
+    Lat:
+      name: lat
+      in: query
+      required: true
+      schema:
+        type: number
+        format: double
+        minimum: -90
+        maximum: 90
+      description: Also accepted as `latitude`.
+    Lng:
+      name: lng
+      in: query
+      required: true
+      schema:
+        type: number
+        format: double
+        minimum: -180
+        maximum: 180
+      description: Also accepted as `longitude`.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 10
+
+  responses:
+    BadRequest:
+      description: Invalid JSON, UUID, or field validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Row does not exist
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Unique name, duplicate link, or a row that is still in use
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: Caguar rejected the call
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: Caguar is not configured
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Success:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+    Error:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: string
+          description: Present only when field validation fails.
+    Health:
+      type: object
+      properties:
+        db:
+          type: string
+          enum: [up, down]
+        redis:
+          type: string
+          enum: [up, down]
+        nats:
+          type: string
+          enum: [up, down]
+    Thing:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          example: vehicle
+        is_trackable:
+          type: boolean
+        department_id:
+          type: string
+          format: uuid
+        group_id:
+          type: string
+          format: uuid
+          nullable: true
+        latitude:
+          type: number
+          format: double
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ThingWrite:
+      type: object
+      required: [name, type, department_id]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        type:
+          type: string
+          maxLength: 50
+        is_trackable:
+          type: boolean
+        department_id:
+          type: string
+          format: uuid
+        group_id:
+          type: string
+          format: uuid
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+    ExternalRefWrite:
+      type: object
+      required: [external_system, external_id]
+      properties:
+        external_system:
+          type: string
+          example: traccar-go
+        external_id:
+          type: string
+          description: Caguar device id.
+    ExternalRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        thing_id:
+          type: string
+          format: uuid
+        external_system:
+          type: string
+        external_id:
+          type: string
+        synced_at:
+          type: string
+          format: date-time
+    Credential:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        api_key:
+          type: string
+        status:
+          type: string
+          example: active
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    CredentialIssued:
+      type: object
+      properties:
+        api_key:
+          type: string
+        api_secret:
+          type: string
+          description: Returned only by the issue call.
+    DeviceRegistration:
+      type: object
+      required: [name, department_id]
+      properties:
+        name:
+          type: string
+        unique_id:
+          type: string
+        uniqueId:
+          type: string
+          description: Camel-case alias of `unique_id`.
+        department_id:
+          type: string
+          format: uuid
+        tracker_type:
+          type: string
+        trackerType:
+          type: string
+        plate_number:
+          type: string
+          description: When set, must match `ABC-1234`.
+        plateNumber:
+          type: string
+        chassis_number:
+          type: string
+        chassisNumber:
+          type: string
+        phone:
+          type: string
+        model:
+          type: string
+        contact:
+          type: string
+        status:
+          type: string
+          description: Optional. Leave this out so Caguar starts the device offline and sets it online only when the identifier is valid.
+        category:
+          type: string
+        disabled:
+          type: boolean
+    DeviceResult:
+      type: object
+      properties:
+        thing_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        unique_id:
+          type: string
+        department_id:
+          type: string
+          format: uuid
+        tracker_type:
+          type: string
+        plate_number:
+          type: string
+        chassis_number:
+          type: string
+    DriverRegistration:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        unique_id:
+          type: string
+        uniqueId:
+          type: string
+    DriverResult:
+      type: object
+      properties:
+        name:
+          type: string
+        unique_id:
+          type: string
+    Channel:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ChannelWrite:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+    ChannelAcl:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        thing_id:
+          type: string
+          format: uuid
+        can_publish:
+          type: boolean
+        can_subscribe:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    ChannelAclCreate:
+      type: object
+      required: [thing_id]
+      properties:
+        thing_id:
+          type: string
+          format: uuid
+        can_publish:
+          type: boolean
+        can_subscribe:
+          type: boolean
+    ChannelAclUpdate:
+      type: object
+      properties:
+        can_publish:
+          type: boolean
+        can_subscribe:
+          type: boolean
+    Group:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parent_group_id:
+          type: string
+          format: uuid
+          nullable: true
+        department_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    GroupWrite:
+      type: object
+      required: [name, department_id]
+      properties:
+        name:
+          type: string
+        parent_group_id:
+          type: string
+          format: uuid
+          nullable: true
+        department_id:
+          type: string
+          format: uuid
+    ResourceStatus:
+      type: string
+      enum: [available, offered, dispatched, maintenance]
+    AssignmentStatus:
+      type: string
+      enum: [scheduled, active, completed, cancelled]
+    ResourceType:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        code:
+          type: string
+          description: Unit type code. Empty is allowed. A non-empty code is unique inside the department.
+        alt_name:
+          type: string
+          description: Alternate name, for example the Arabic name.
+        acceptance_timeout_seconds:
+          type: integer
+          minimum: 1
+          default: 120
+        min_speed:
+          type: integer
+          minimum: 0
+        max_speed:
+          type: integer
+          minimum: 0
+        min_weight:
+          type: integer
+          minimum: 0
+        max_weight:
+          type: integer
+          minimum: 0
+        active_till_date:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+        icon:
+          type: string
+          description: Icon path or URL. The screen upload stores the resulting path here.
+        colors:
+          $ref: "#/components/schemas/AttributeColors"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ResourceTypeWrite:
+      type: object
+      required: [department_id, name]
+      properties:
+        department_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        code:
+          type: string
+        alt_name:
+          type: string
+        acceptance_timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Defaults to 120 when omitted.
+        min_speed:
+          type: integer
+        max_speed:
+          type: integer
+        min_weight:
+          type: integer
+        max_weight:
+          type: integer
+        active_till_date:
+          type: string
+          description: "`YYYY-MM-DD`. Send an empty string to clear it."
+        is_active:
+          type: boolean
+        icon:
+          type: string
+        colors:
+          $ref: "#/components/schemas/AttributeColors"
+    AttributeColors:
+      type: object
+      description: Map colors for a unit type. Omitted keys keep the current color, or the default on create.
+      properties:
+        available:
+          type: string
+          example: "#22A45D"
+        busy:
+          type: string
+          example: "#E23B3B"
+        moving_vehicle:
+          type: string
+          example: "#E0A100"
+        offline:
+          type: string
+          example: "#6B7280"
+        ignition_on:
+          type: string
+          example: "#7C3AED"
+        ignition_off:
+          type: string
+          example: "#2563EB"
+        over_speed:
+          type: string
+          example: "#D946EF"
+        stop_over_20_min:
+          type: string
+          example: "#4C1D95"
+    Location:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat:
+          type: number
+          format: double
+        lng:
+          type: number
+          format: double
+    ServicePoint:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        alt_name:
+          type: string
+          description: Fire station name in Arabic.
+        department_id:
+          type: string
+          format: uuid
+        radio_id:
+          type: string
+          description: Required. Unique within the department. Empty values are rejected.
+        location_name:
+          type: string
+        location_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Location id from the locations tree. Stored as given; the tree lives in Automax-Backend.
+        location:
+          $ref: "#/components/schemas/Location"
+        active_till_date:
+          type: string
+          format: date
+          nullable: true
+        is_active:
+          type: boolean
+        icon:
+          type: string
+          description: Path returned by POST /dispatch/icons, or any path or URL.
+        resource_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Units whose home station is this fire station. The stored value is each unit's service_point_id.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ServicePointWrite:
+      type: object
+      required: [name, department_id, location, radio_id]
+      properties:
+        name:
+          type: string
+        alt_name:
+          type: string
+        department_id:
+          type: string
+          format: uuid
+        radio_id:
+          type: string
+          description: Required on create and cannot be cleared. Unique within the department. Omit on update to keep the current value.
+        location_name:
+          type: string
+        location_id:
+          type: string
+          format: uuid
+          nullable: true
+        location:
+          $ref: "#/components/schemas/Location"
+        active_till_date:
+          type: string
+        is_active:
+          type: boolean
+        icon:
+          type: string
+        resource_ids:
+          type: array
+          description: |
+            Accepted on create and update. When sent, replaces the units whose home station is this one.
+            A unit already assigned to another station is moved here. Send [] to detach every unit.
+            Omit the field to leave assignments unchanged. The stored source of truth is resource.service_point_id.
+          items:
+            type: string
+            format: uuid
+    NearestServicePoint:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        department_id:
+          type: string
+          format: uuid
+        location:
+          $ref: "#/components/schemas/Location"
+        distance_meters:
+          type: number
+          format: double
+    Shift:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        start_time:
+          type: string
+          example: "08:00:00"
+        end_time:
+          type: string
+          example: "16:00:00"
+        days_of_week:
+          type: string
+          example: MON,TUE,WED,THU,FRI
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ShiftWrite:
+      type: object
+      required: [department_id, name, start_time, end_time, days_of_week]
+      properties:
+        department_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 100
+        start_time:
+          type: string
+          description: "`HH:MM` or `HH:MM:SS`"
+        end_time:
+          type: string
+        days_of_week:
+          type: string
+          description: Comma-separated `MON,TUE,WED,THU,FRI,SAT,SUN`.
+        is_active:
+          type: boolean
+    Resource:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        thing_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Copied from the thing. Not stored on the resource row.
+        resource_type_id:
+          type: string
+          format: uuid
+        service_point_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          $ref: "#/components/schemas/ResourceStatus"
+        alternate_name:
+          type: string
+        plate_number:
+          type: string
+        location_name:
+          type: string
+        classification:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        radio_id:
+          type: string
+        is_active:
+          type: boolean
+        active_till_date:
+          type: string
+          format: date
+          nullable: true
+        call_code:
+          type: string
+        unit_code:
+          type: string
+          description: Human-readable unit id shown in the table. Unique when set. The uuid id is unchanged.
+        location_id:
+          type: string
+          format: uuid
+          nullable: true
+        classification_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Classification tree ids. classification still carries the text labels.
+        gprs:
+          type: string
+        sms:
+          type: string
+        sms_vip:
+          type: string
+        sim:
+          type: string
+        driver_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        shift_id:
+          type: string
+          format: uuid
+          nullable: true
+        partner_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        latitude:
+          type: number
+          format: double
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ResourceWrite:
+      type: object
+      required: [resource_type_id]
+      properties:
+        thing_id:
+          type: string
+          format: uuid
+          description: Existing registry thing. Omit it and send name to create a vehicle thing in the unit type's department.
+        name:
+          type: string
+          description: Unit name. When thing_id is set, this renames that thing.
+        resource_type_id:
+          type: string
+          format: uuid
+        service_point_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          $ref: "#/components/schemas/ResourceStatus"
+        alternate_name:
+          type: string
+        plate_number:
+          type: string
+        location_name:
+          type: string
+        classification:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        radio_id:
+          type: string
+        is_active:
+          type: boolean
+        active_till_date:
+          type: string
+          format: date
+          nullable: true
+        call_code:
+          type: string
+        unit_code:
+          type: string
+        location_id:
+          type: string
+          format: uuid
+          nullable: true
+        classification_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        gprs:
+          type: string
+        sms:
+          type: string
+        sms_vip:
+          type: string
+        sim:
+          type: string
+        driver_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required when shift_id or partner_user_id is sent.
+        shift_id:
+          type: string
+          format: uuid
+          nullable: true
+        partner_user_id:
+          type: string
+          format: uuid
+          nullable: true
+    NearestResource:
+      type: object
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+        resource_type_id:
+          type: string
+          format: uuid
+        operator_id:
+          type: string
+          format: uuid
+          description: Driver currently on duty for this unit (`user_id` of the active shift assignment).
+        status:
+          type: string
+        distance_meters:
+          type: number
+          format: double
+    Assignment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        resource_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          description: Driver user id from Automax-Backend.
+        partner_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Partner user id from Automax-Backend.
+        shift_id:
+          type: string
+          format: uuid
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          $ref: "#/components/schemas/AssignmentStatus"
+    AssignmentWrite:
+      type: object
+      required: [resource_id, user_id]
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        partner_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        shift_id:
+          type: string
+          format: uuid
+          nullable: true
+        start_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          $ref: "#/components/schemas/AssignmentStatus"
+    PositionIngest:
+      type: object
+      required: [deviceId, latitude, longitude]
+      properties:
+        deviceId:
+          description: Caguar device id. String or number.
+          oneOf:
+            - type: string
+            - type: number
+        deviceName:
+          type: string
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        fixTime:
+          type: string
+          format: date-time
+        valid:
+          type: boolean
+          description: When false, the fix is ignored.

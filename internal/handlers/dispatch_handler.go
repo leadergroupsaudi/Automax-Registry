@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/automax/registry/internal/models"
 	"github.com/automax/registry/internal/services"
@@ -75,9 +77,22 @@ func (h *ResourceTypeHandler) List(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
-	rows, err := h.svc.List(c.UserContext(), models.ResourceTypeListFilter{DepartmentID: departmentID})
+	page, err := listWindow(c)
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	rows, total, err := h.svc.List(c.UserContext(), models.ResourceTypeListFilter{
+		DepartmentID: departmentID,
+		Search:       page.Search,
+		Active:       page.Active,
+		Page:         page.Page,
+		Limit:        page.Limit,
+	})
 	if err != nil {
 		return writeServiceErr(c, err)
+	}
+	if page.Page > 0 {
+		return utils.PagedSuccessResponse(c, "resource types retrieved", rows, page.Page, page.Limit, total)
 	}
 	return utils.SuccessResponse(c, fiber.StatusOK, "resource types retrieved", rows)
 }
@@ -123,7 +138,8 @@ func (h *ServicePointHandler) Delete(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
-	if err := h.svc.Delete(c.UserContext(), id); err != nil {
+	force := c.Query("force") == "true" || c.Query("force") == "1"
+	if err := h.svc.Delete(c.UserContext(), id, force); err != nil {
 		return writeServiceErr(c, err)
 	}
 	return utils.SuccessResponse(c, fiber.StatusOK, "service point deleted", nil)
@@ -191,9 +207,26 @@ func servicePointNearestQuery(c *fiber.Ctx) (float64, float64, int, *uuid.UUID, 
 }
 
 func (h *ServicePointHandler) List(c *fiber.Ctx) error {
-	rows, err := h.svc.List(c.UserContext())
+	departmentID, err := loggedQueryID(c, "department_id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	page, err := listWindow(c)
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	rows, total, err := h.svc.List(c.UserContext(), models.ServicePointListFilter{
+		DepartmentID: departmentID,
+		Search:       page.Search,
+		Active:       page.Active,
+		Page:         page.Page,
+		Limit:        page.Limit,
+	})
 	if err != nil {
 		return writeServiceErr(c, err)
+	}
+	if page.Page > 0 {
+		return utils.PagedSuccessResponse(c, "service points retrieved", rows, page.Page, page.Limit, total)
 	}
 	return utils.SuccessResponse(c, fiber.StatusOK, "service points retrieved", rows)
 }
@@ -329,9 +362,12 @@ func (h *ResourceHandler) List(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
-	rows, err := h.svc.List(c.UserContext(), filter)
+	rows, total, err := h.svc.List(c.UserContext(), filter)
 	if err != nil {
 		return writeServiceErr(c, err)
+	}
+	if filter.Page > 0 {
+		return utils.PagedSuccessResponse(c, "resources retrieved", rows, filter.Page, filter.Limit, total)
 	}
 	return utils.SuccessResponse(c, fiber.StatusOK, "resources retrieved", rows)
 }
@@ -346,10 +382,83 @@ func resourceFilter(c *fiber.Ctx) (models.ResourceListFilter, error) {
 	if err != nil {
 		return filter, err
 	}
+	driverID, err := loggedQueryID(c, "driver_user_id")
+	if err != nil {
+		return filter, err
+	}
+	locationID, err := loggedQueryID(c, "location_id")
+	if err != nil {
+		return filter, err
+	}
+	classID, err := loggedQueryID(c, "classification_id")
+	if err != nil {
+		return filter, err
+	}
 	filter.ResourceTypeID = typeID
 	filter.ServicePointID = pointID
+	filter.DriverUserID = driverID
+	filter.LocationID = locationID
+	filter.ClassificationID = classID
+	filter.ActiveTillDate = strings.TrimSpace(c.Query("active_till_date"))
+	if filter.ActiveTillDate != "" {
+		if _, err := time.Parse("2006-01-02", filter.ActiveTillDate); err != nil {
+			return filter, fmt.Errorf("active_till_date must be YYYY-MM-DD")
+		}
+	}
 	filter.Status = c.Query("status")
+	page, err := listWindow(c)
+	if err != nil {
+		return filter, err
+	}
+	filter.Search = page.Search
+	filter.Active = page.Active
+	filter.Page = page.Page
+	filter.Limit = page.Limit
 	return filter, nil
+}
+
+type listQuery struct {
+	Page   int
+	Limit  int
+	Search string
+	Active *bool
+}
+
+func listWindow(c *fiber.Ctx) (listQuery, error) {
+	out := listQuery{Search: strings.TrimSpace(c.Query("search"))}
+	if raw := strings.TrimSpace(c.Query("is_active")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true", "1":
+			v := true
+			out.Active = &v
+		case "false", "0":
+			v := false
+			out.Active = &v
+		default:
+			return out, fmt.Errorf("is_active must be true or false")
+		}
+	}
+	rawPage := strings.TrimSpace(c.Query("page"))
+	if rawPage == "" {
+		return out, nil
+	}
+	page, err := strconv.Atoi(rawPage)
+	if err != nil || page < 1 {
+		return out, fmt.Errorf("page must be at least 1")
+	}
+	limit := 10
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 {
+			return out, fmt.Errorf("limit must be at least 1")
+		}
+		if limit > 100 {
+			return out, fmt.Errorf("limit must be at most 100")
+		}
+	}
+	out.Page = page
+	out.Limit = limit
+	return out, nil
 }
 
 type AssignmentHandler struct {

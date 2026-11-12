@@ -13,7 +13,7 @@ type ResourceTypeRepository interface {
 	Update(ctx context.Context, row *models.ResourceType) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.ResourceType, error)
-	List(ctx context.Context, filter models.ResourceTypeListFilter) ([]models.ResourceType, error)
+	List(ctx context.Context, filter models.ResourceTypeListFilter) ([]models.ResourceType, int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	ResourceCount(ctx context.Context, id uuid.UUID) (int64, error)
 }
@@ -51,14 +51,46 @@ func (r *resourceTypeRepository) FindByID(ctx context.Context, id uuid.UUID) (*m
 	return &row, nil
 }
 
-func (r *resourceTypeRepository) List(ctx context.Context, filter models.ResourceTypeListFilter) ([]models.ResourceType, error) {
+func (r *resourceTypeRepository) List(ctx context.Context, filter models.ResourceTypeListFilter) ([]models.ResourceType, int64, error) {
 	q := r.db.WithContext(ctx).Model(&models.ResourceType{})
 	if filter.DepartmentID != nil {
 		q = q.Where("department_id = ?", *filter.DepartmentID)
 	}
+	if filter.Active != nil {
+		q = q.Where("is_active = ?", *filter.Active)
+	}
+	if pattern := likeContains(filter.Search); pattern != "" {
+		q = q.Where(
+			"(name ILIKE ? ESCAPE '\\' OR code ILIKE ? ESCAPE '\\' OR alt_name ILIKE ? ESCAPE '\\')",
+			pattern, pattern, pattern,
+		)
+	}
+	var total int64
+	if filter.Page > 0 {
+		if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+			return nil, 0, err
+		}
+		limit := pageLimit(filter.Limit)
+		q = q.Offset((filter.Page - 1) * limit).Limit(limit)
+	}
 	var rows []models.ResourceType
-	err := q.Order("name ASC, id ASC").Find(&rows).Error
-	return rows, err
+	if err := q.Order("name ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	if filter.Page == 0 {
+		total = int64(len(rows))
+	}
+	return rows, total, nil
+}
+
+func pageLimit(limit int) int {
+	if limit < 1 {
+		return 10
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
 }
 
 func (r *resourceTypeRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {

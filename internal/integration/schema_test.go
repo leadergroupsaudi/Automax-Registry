@@ -9,16 +9,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestSchemaHasSixTablesAndRealForeignKeys(t *testing.T) {
+func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 	var tables []string
 	if err := db.Raw(`
 		SELECT table_name FROM information_schema.tables
-		WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name <> 'schema_migrations'
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+		  AND table_name NOT IN ('schema_migrations', 'spatial_ref_sys')
 		ORDER BY table_name`).Scan(&tables).Error; err != nil {
 		t.Fatal(err)
 	}
-	wantTables := []string{"channel_acl", "channels", "device_credentials", "groups", "thing_external_refs", "things"}
+	wantTables := []string{
+		"channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_ticket_projection",
+		"groups", "resource", "resource_shift_assignment", "resource_type", "service_point", "shift",
+		"thing_external_refs", "things",
+	}
 	assertThingCoordinateColumns(t)
+	assertThingResourceColumns(t)
 	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
 		t.Fatalf("tables = %v", tables)
 	}
@@ -48,12 +54,18 @@ func TestSchemaHasSixTablesAndRealForeignKeys(t *testing.T) {
 		got[fk.TableName+"."+fk.ColumnName] = fk.ForeignTable + "|" + fk.DeleteRule
 	}
 	want := map[string]string{
-		"things.group_id":              "groups|RESTRICT",
-		"groups.parent_group_id":       "groups|RESTRICT",
-		"channel_acl.channel_id":       "channels|CASCADE",
-		"channel_acl.thing_id":         "things|CASCADE",
-		"device_credentials.thing_id":  "things|RESTRICT",
-		"thing_external_refs.thing_id": "things|RESTRICT",
+		"things.group_id":                       "groups|RESTRICT",
+		"groups.parent_group_id":                "groups|RESTRICT",
+		"channel_acl.channel_id":                "channels|CASCADE",
+		"channel_acl.thing_id":                  "things|CASCADE",
+		"device_credentials.thing_id":           "things|RESTRICT",
+		"thing_external_refs.thing_id":          "things|RESTRICT",
+		"resource.resource_type_id":             "resource_type|RESTRICT",
+		"resource.service_point_id":             "service_point|RESTRICT",
+		"resource.shift_id":                     "shift|NO ACTION",
+		"resource_shift_assignment.resource_id": "resource|RESTRICT",
+		"resource_shift_assignment.shift_id":    "shift|RESTRICT",
+		"dispatch_assignment.resource_id":       "resource|RESTRICT",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("foreign keys = %#v", got)
@@ -66,6 +78,11 @@ func TestSchemaHasSixTablesAndRealForeignKeys(t *testing.T) {
 	for key := range got {
 		if strings.Contains(key, "department") {
 			t.Fatalf("department_id must not be a foreign key: %s", key)
+		}
+	}
+	for _, key := range []string{"resource.thing_id", "resource_shift_assignment.user_id", "dispatch_assignment.incident_id"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("%s must not be a foreign key", key)
 		}
 	}
 
@@ -93,6 +110,13 @@ func TestSchemaHasSixTablesAndRealForeignKeys(t *testing.T) {
 		"uq_channel_acl_channel_thing":        "channel_id,thing_id",
 		"uq_device_credentials_api_key":       "api_key",
 		"uq_thing_external_refs_thing_system": "thing_id,external_system",
+		"uq_resource_thing":                   "thing_id",
+		"uq_things_department_name":           "department_id,name",
+		"uq_groups_department_name":           "department_id,name",
+		"uq_channels_name":                    "name",
+		"uq_resource_type_department_name":    "department_id,name",
+		"uq_service_point_department_name":    "department_id,name",
+		"uq_shift_department_name":            "department_id,name",
 	} {
 		if found[name] != cols {
 			t.Fatalf("unique %s = %q, want %q (all %#v)", name, found[name], cols, found)
@@ -173,6 +197,32 @@ func assertThingCoordinateColumns(t *testing.T) {
 	}
 	for _, c := range cols {
 		if c.Nullable != "YES" || c.Type != "double precision" {
+			t.Fatalf("column %#v", c)
+		}
+	}
+}
+
+func assertThingResourceColumns(t *testing.T) {
+	t.Helper()
+	type col struct {
+		Name     string `gorm:"column:column_name"`
+		Nullable string `gorm:"column:is_nullable"`
+	}
+	var cols []col
+	err := db.Raw(`
+		SELECT column_name, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'things'
+		  AND column_name IN ('resource_type_id', 'service_point_id', 'resource_status')
+		ORDER BY column_name`).Scan(&cols).Error
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cols) != 3 {
+		t.Fatalf("resource columns %#v", cols)
+	}
+	for _, c := range cols {
+		if c.Nullable != "YES" {
 			t.Fatalf("column %#v", c)
 		}
 	}

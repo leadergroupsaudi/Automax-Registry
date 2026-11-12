@@ -307,17 +307,55 @@ func (c *Client) tryConnect() bool {
 }
 
 func ensureRegistryStream(js nats.JetStreamContext) {
-	if _, err := js.StreamInfo(registryStream); err == nil {
+	want := []string{"registry.thing.>", "registry.dispatch.>"}
+	info, err := js.StreamInfo(registryStream)
+	if err == nil {
+		if subjectsCover(info.Config.Subjects, want) {
+			return
+		}
+		cfg := info.Config
+		cfg.Subjects = mergeSubjects(cfg.Subjects, want)
+		if _, uerr := js.UpdateStream(&cfg); uerr != nil {
+			log.Printf("registry: NATS JetStream stream %s was not updated: %v", registryStream, uerr)
+		}
 		return
 	}
-	_, err := js.AddStream(&nats.StreamConfig{
+	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     registryStream,
-		Subjects: []string{"registry.thing.>"},
+		Subjects: want,
 		Storage:  nats.FileStorage,
 	})
 	if err != nil && !errorsIsStreamExists(err) {
 		log.Printf("registry: NATS JetStream stream %s was not created: %v", registryStream, err)
 	}
+}
+
+func subjectsCover(have, want []string) bool {
+	seen := map[string]bool{}
+	for _, subject := range have {
+		seen[subject] = true
+	}
+	for _, subject := range want {
+		if !seen[subject] {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeSubjects(have, want []string) []string {
+	out := append([]string{}, have...)
+	seen := map[string]bool{}
+	for _, subject := range out {
+		seen[subject] = true
+	}
+	for _, subject := range want {
+		if !seen[subject] {
+			out = append(out, subject)
+			seen[subject] = true
+		}
+	}
+	return out
 }
 
 func errorsIsStreamExists(err error) bool {

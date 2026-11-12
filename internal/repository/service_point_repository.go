@@ -2,18 +2,23 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"github.com/automax/registry/internal/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
+// ErrUnknownResource means a station assignment listed a resource id that does not exist.
+var ErrUnknownResource = errors.New("unknown resource")
+
 type ServicePointRepository interface {
 	Create(ctx context.Context, row *models.ServicePoint) error
 	Update(ctx context.Context, row *models.ServicePoint) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.ServicePoint, error)
-	List(ctx context.Context) ([]models.ServicePoint, error)
+	List(ctx context.Context, filter models.ServicePointListFilter) ([]models.ServicePoint, int64, error)
+	AssignResources(ctx context.Context, pointID uuid.UUID, resourceIDs []uuid.UUID) error
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	ResourceCount(ctx context.Context, id uuid.UUID) (int64, error)
 	Nearest(ctx context.Context, latitude, longitude float64, resourceTypeID *uuid.UUID, limit int) ([]models.NearestServicePoint, error)
@@ -26,10 +31,16 @@ func NewServicePointRepository(db *gorm.DB) ServicePointRepository {
 }
 
 const servicePointSelect = `
-	SELECT id, name, department_id,
+	SELECT id, name, department_id, alt_name, radio_id, location_name, location_id,
+	       active_till_date, is_active, icon,
 	       ST_Y(location::geometry) AS latitude,
 	       ST_X(location::geometry) AS longitude,
-	       created_at, updated_at
+	       created_at, updated_at,
+	       COALESCE((
+	           SELECT json_agg(r.id ORDER BY r.id)
+	           FROM resource r
+	           WHERE r.service_point_id = service_point.id
+	       ), '[]'::json) AS resource_ids
 	FROM service_point
 `
 
@@ -38,9 +49,13 @@ func (r *servicePointRepository) Create(ctx context.Context, row *models.Service
 		row.ID = uuid.New()
 	}
 	err := r.db.WithContext(ctx).Exec(`
-		INSERT INTO service_point (id, name, department_id, location)
-		VALUES (?, ?, ?, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography)`,
+		INSERT INTO service_point (
+			id, name, department_id, location, alt_name, radio_id, location_name, location_id,
+			active_till_date, is_active, icon
+		)
+		VALUES (?, ?, ?, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ID, row.Name, row.DepartmentID, row.Longitude, row.Latitude,
+		row.AltName, row.RadioID, row.LocationName, row.LocationID, row.ActiveTillDate, row.IsActive, row.Icon,
 	).Error
 	if err != nil {
 		return err
@@ -56,11 +71,13 @@ func (r *servicePointRepository) Create(ctx context.Context, row *models.Service
 func (r *servicePointRepository) Update(ctx context.Context, row *models.ServicePoint) error {
 	res := r.db.WithContext(ctx).Exec(`
 		UPDATE service_point
-		SET name = ?, department_id = ?,
+		SET name = ?, department_id = ?, alt_name = ?, radio_id = ?, location_name = ?, location_id = ?,
 		    location = ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography,
+		    active_till_date = ?, is_active = ?, icon = ?,
 		    updated_at = now()
 		WHERE id = ?`,
-		row.Name, row.DepartmentID, row.Longitude, row.Latitude, row.ID,
+		row.Name, row.DepartmentID, row.AltName, row.RadioID, row.LocationName, row.LocationID,
+		row.Longitude, row.Latitude, row.ActiveTillDate, row.IsActive, row.Icon, row.ID,
 	)
 	if res.Error != nil {
 		return res.Error
@@ -99,10 +116,84 @@ func (r *servicePointRepository) FindByID(ctx context.Context, id uuid.UUID) (*m
 	return &row, nil
 }
 
-func (r *servicePointRepository) List(ctx context.Context) ([]models.ServicePoint, error) {
+func (r *servicePointRepository) List(ctx context.Context, filter models.ServicePointListFilter) ([]models.ServicePoint, int64, error) {
+	where := ` WHERE 1 = 1`
+	args := make([]any, 0, 6)
+	if filter.DepartmentID != nil {
+		where += ` AND department_id = ?`
+		args = append(args, *filter.DepartmentID)
+	}
+	if filter.Active != nil {
+		where += ` AND is_active = ?`
+		args = append(args, *filter.Active)
+	}
+	if pattern := likeContains(filter.Search); pattern != "" {
+		where += ` AND (name ILIKE ? ESCAPE '\' OR alt_name ILIKE ? ESCAPE '\' OR radio_id ILIKE ? ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
+	}
+	var total int64
+	if filter.Page > 0 {
+		if err := r.db.WithContext(ctx).Raw(`SELECT COUNT(*) FROM service_point`+where, args...).Scan(&total).Error; err != nil {
+			return nil, 0, err
+		}
+	}
+	q := servicePointSelect + where + ` ORDER BY name ASC, id ASC`
+	qargs := append([]any{}, args...)
+	if filter.Page > 0 {
+		limit := pageLimit(filter.Limit)
+		q += ` LIMIT ? OFFSET ?`
+		qargs = append(qargs, limit, (filter.Page-1)*limit)
+	}
 	var rows []models.ServicePoint
-	err := r.db.WithContext(ctx).Raw(servicePointSelect + ` ORDER BY name ASC, id ASC`).Scan(&rows).Error
-	return rows, err
+	if err := r.db.WithContext(ctx).Raw(q, qargs...).Scan(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	if filter.Page == 0 {
+		total = int64(len(rows))
+	}
+	return rows, total, nil
+}
+
+func (r *servicePointRepository) AssignResources(ctx context.Context, pointID uuid.UUID, resourceIDs []uuid.UUID) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(resourceIDs) > 0 {
+			var n int64
+			if err := tx.Model(&models.Resource{}).Where("id IN ?", resourceIDs).Count(&n).Error; err != nil {
+				return err
+			}
+			if int(n) != len(resourceIDs) {
+				return ErrUnknownResource
+			}
+		}
+		detachThings := `
+			UPDATE things SET service_point_id = NULL, updated_at = now()
+			WHERE id IN (SELECT thing_id FROM resource WHERE service_point_id = ?`
+		detachResources := `UPDATE resource SET service_point_id = NULL, updated_at = now() WHERE service_point_id = ?`
+		args := []any{pointID}
+		if len(resourceIDs) > 0 {
+			detachThings += ` AND id NOT IN ?`
+			detachResources += ` AND id NOT IN ?`
+			args = append(args, resourceIDs)
+		}
+		detachThings += `)`
+		if err := tx.Exec(detachThings, args...).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(detachResources, args...).Error; err != nil {
+			return err
+		}
+		if len(resourceIDs) == 0 {
+			return nil
+		}
+		if err := tx.Exec(`
+			UPDATE things SET service_point_id = ?, updated_at = now()
+			WHERE id IN (SELECT thing_id FROM resource WHERE id IN ?)`, pointID, resourceIDs).Error; err != nil {
+			return err
+		}
+		return tx.Exec(`
+			UPDATE resource SET service_point_id = ?, updated_at = now()
+			WHERE id IN ?`, pointID, resourceIDs).Error
+	})
 }
 
 func (r *servicePointRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {
@@ -124,13 +215,15 @@ func (r *servicePointRepository) Nearest(ctx context.Context, latitude, longitud
 		       ST_X(sp.location::geometry) AS longitude,
 		       ST_Distance(sp.location, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography) AS distance_meters
 		FROM service_point sp
-		WHERE (
+		WHERE sp.is_active = true
+		  AND (
 			? = false
 			OR EXISTS (
 				SELECT 1 FROM resource r
 				WHERE r.service_point_id = sp.id
 				  AND r.resource_type_id = ?
 				  AND r.status = 'available'
+				  AND r.is_active = true
 			)
 		)
 		ORDER BY distance_meters ASC, sp.id ASC

@@ -154,6 +154,9 @@ func (s *AssignmentService) prepare(ctx context.Context, id uuid.UUID, req model
 	if req.ShiftID != nil && *req.ShiftID == uuid.Nil {
 		fields["shift_id"] = "shift_id must be a UUID"
 	}
+	if req.PartnerUserID != nil && *req.PartnerUserID == uuid.Nil {
+		fields["partner_user_id"] = "partner_user_id must be a UUID"
+	}
 	status := choice(fields, "status", req.Status, models.AssignmentScheduled, assignmentStatuses...)
 	if req.StartAt != nil && req.EndAt != nil && !req.EndAt.After(*req.StartAt) {
 		fields["end_at"] = "end_at must be after start_at"
@@ -192,13 +195,14 @@ func (s *AssignmentService) prepare(ctx context.Context, id uuid.UUID, req model
 	}
 
 	return &models.ResourceShiftAssignment{
-		ID:         id,
-		ResourceID: req.ResourceID,
-		UserID:     req.UserID,
-		ShiftID:    req.ShiftID,
-		StartAt:    req.StartAt,
-		EndAt:      req.EndAt,
-		Status:     status,
+		ID:            id,
+		ResourceID:    req.ResourceID,
+		UserID:        req.UserID,
+		PartnerUserID: req.PartnerUserID,
+		ShiftID:       req.ShiftID,
+		StartAt:       req.StartAt,
+		EndAt:         req.EndAt,
+		Status:        status,
 	}, window, nil
 }
 

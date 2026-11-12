@@ -75,26 +75,34 @@ func openTestDB() (*gorm.DB, error) {
 
 func ensurePostgresContainer() error {
 	const name = "automax-registry-test-pg"
-	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).CombinedOutput()
-	if err != nil {
-		cmd := exec.Command("docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
-			"-e", "POSTGRES_USER=registry",
-			"-e", "POSTGRES_PASSWORD=registry",
-			"-e", "POSTGRES_DB=registry",
-			"-p", "127.0.0.1:5441:5432",
-			"postgres:16-alpine",
-		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if runErr := cmd.Run(); runErr != nil {
-			return fmt.Errorf("start postgres container: %w", runErr)
+	const image = "postgis/postgis:16-3.5-alpine"
+	out, err := exec.Command("docker", "inspect", "-f", "{{.Config.Image}} {{.State.Running}}", name).CombinedOutput()
+	if err == nil {
+		parts := strings.Fields(strings.TrimSpace(string(out)))
+		if len(parts) == 2 && parts[0] == image {
+			if parts[1] == "true" {
+				return nil
+			}
+			if startErr := exec.Command("docker", "start", name).Run(); startErr != nil {
+				return fmt.Errorf("start existing postgres container: %w", startErr)
+			}
+			return nil
 		}
-		return nil
+		if rmErr := exec.Command("docker", "rm", "-f", name).Run(); rmErr != nil {
+			return fmt.Errorf("replace postgres container: %w", rmErr)
+		}
 	}
-	if strings.TrimSpace(string(out)) != "true" {
-		if startErr := exec.Command("docker", "start", name).Run(); startErr != nil {
-			return fmt.Errorf("start existing postgres container: %w", startErr)
-		}
+	cmd := exec.Command("docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+		"-e", "POSTGRES_USER=registry",
+		"-e", "POSTGRES_PASSWORD=registry",
+		"-e", "POSTGRES_DB=registry",
+		"-p", "127.0.0.1:5441:5432",
+		image,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if runErr := cmd.Run(); runErr != nil {
+		return fmt.Errorf("start postgres container: %w", runErr)
 	}
 	return nil
 }
@@ -111,7 +119,7 @@ func resetSchema(conn *gorm.DB) error {
 
 func truncate(t *testing.T) {
 	t.Helper()
-	err := db.Exec(`TRUNCATE TABLE channel_acl, device_credentials, thing_external_refs, things, channels, groups CASCADE`).Error
+	err := db.Exec(`TRUNCATE TABLE dispatch_assignment, resource_shift_assignment, resource, shift, service_point, resource_type, dispatch_ticket_projection, channel_acl, device_credentials, thing_external_refs, things, channels, groups CASCADE`).Error
 	if err != nil {
 		t.Fatal(err)
 	}

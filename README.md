@@ -35,7 +35,7 @@ Automax-Registry/
 
 Registry uses the same JetStream-enabled NATS cluster as Core and Dispatch. Set `NATS_URL` to that cluster. The Compose NATS on port `4224` is the standalone stand-in and already starts with JetStream.
 
-Registry owns stream `REGISTRY` and subjects `registry.thing.>`. It does not subscribe to Dispatch subjects. Core keeps stream `INCIDENT_STATE`.
+Registry owns stream `REGISTRY` and subjects `registry.thing.>` and `registry.dispatch.>`. It does not subscribe to Dispatch subjects. Core keeps stream `INCIDENT_STATE`. Unit, unit type, and fire-station changes are published on `registry.dispatch.>`.
 
 Queue groups and durable consumers use a service prefix so the two services never join the same group:
 

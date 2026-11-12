@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
 
@@ -12,32 +13,46 @@ import (
 
 type ServicePointService struct {
 	repo repository.ServicePointRepository
+	pub  Publisher
 }
 
 func NewServicePointService(repo repository.ServicePointRepository) *ServicePointService {
 	return &ServicePointService{repo: repo}
 }
 
+func (s *ServicePointService) UsePublisher(pub Publisher) {
+	if s == nil {
+		return
+	}
+	s.pub = pub
+}
+
 func (s *ServicePointService) Create(ctx context.Context, req models.ServicePointWriteRequest) (*models.ServicePointResponse, error) {
-	row, err := servicePointFromRequest(uuid.Nil, req)
+	row, err := mergeServicePoint(nil, req)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.repo.Create(ctx, row); err != nil {
-		return nil, asDuplicateName(err, "a service point with this name already exists")
+		return nil, servicePointConflict(err)
+	}
+	if err := s.assign(ctx, row, req); err != nil {
+		_ = s.repo.Delete(ctx, row.ID)
+		return nil, err
 	}
 	log.Printf("registry: service point created id=%s department_id=%s name=%s lat=%v lng=%v", row.ID, row.DepartmentID, row.Name, row.Latitude, row.Longitude)
 	resp := row.Response()
+	publishEvent(s.pub, models.SubjectServicePointCreated, row.ID, resp)
 	return &resp, nil
 }
 
 func (s *ServicePointService) Update(ctx context.Context, id uuid.UUID, req models.ServicePointWriteRequest) (*models.ServicePointResponse, error) {
-	if _, err := s.repo.FindByID(ctx, id); repository.IsNotFound(err) {
+	current, err := s.repo.FindByID(ctx, id)
+	if repository.IsNotFound(err) {
 		return nil, NotFound("service point not found")
 	} else if err != nil {
 		return nil, err
 	}
-	row, err := servicePointFromRequest(id, req)
+	row, err := mergeServicePoint(current, req)
 	if err != nil {
 		return nil, err
 	}
@@ -45,14 +60,42 @@ func (s *ServicePointService) Update(ctx context.Context, id uuid.UUID, req mode
 		if repository.IsNotFound(err) {
 			return nil, NotFound("service point not found")
 		}
-		return nil, asDuplicateName(err, "a service point with this name already exists")
+		return nil, servicePointConflict(err)
+	}
+	if err := s.assign(ctx, row, req); err != nil {
+		return nil, err
 	}
 	log.Printf("registry: service point updated id=%s department_id=%s name=%s lat=%v lng=%v", row.ID, row.DepartmentID, row.Name, row.Latitude, row.Longitude)
 	resp := row.Response()
+	publishEvent(s.pub, models.SubjectServicePointUpdated, row.ID, resp)
 	return &resp, nil
 }
 
-func (s *ServicePointService) Delete(ctx context.Context, id uuid.UUID) error {
+func (s *ServicePointService) assign(ctx context.Context, row *models.ServicePoint, req models.ServicePointWriteRequest) error {
+	if req.ResourceIDs == nil {
+		return nil
+	}
+	ids := uniqueUUIDs(*req.ResourceIDs)
+	if err := s.repo.AssignResources(ctx, row.ID, ids); err != nil {
+		if errors.Is(err, repository.ErrUnknownResource) {
+			return Invalid("validation failed", map[string]string{"resource_ids": "one or more resources were not found"})
+		}
+		return err
+	}
+	stored, err := s.repo.FindByID(ctx, row.ID)
+	if err != nil {
+		return err
+	}
+	*row = *stored
+	return nil
+}
+
+func (s *ServicePointService) Delete(ctx context.Context, id uuid.UUID, force bool) error {
+	if force {
+		if err := s.repo.AssignResources(ctx, id, nil); err != nil {
+			return err
+		}
+	}
 	n, err := s.repo.ResourceCount(ctx, id)
 	if err != nil {
 		return err
@@ -71,7 +114,17 @@ func (s *ServicePointService) Delete(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	log.Printf("registry: service point deleted id=%s", id)
+	publishEvent(s.pub, models.SubjectServicePointDeleted, id, nil)
 	return nil
+}
+
+func servicePointConflict(err error) error {
+	switch repository.UniqueConstraint(err) {
+	case "uq_service_point_department_radio":
+		return Conflict("a service point with this radio id already exists in the department")
+	default:
+		return asDuplicateName(err, "a service point with this name already exists")
+	}
 }
 
 func (s *ServicePointService) Get(ctx context.Context, id uuid.UUID) (*models.ServicePointResponse, error) {
@@ -123,35 +176,16 @@ func typeLabel(id *uuid.UUID) string {
 	return id.String()
 }
 
-func (s *ServicePointService) List(ctx context.Context) ([]models.ServicePointResponse, error) {
-	rows, err := s.repo.List(ctx)
+func (s *ServicePointService) List(ctx context.Context, filter models.ServicePointListFilter) ([]models.ServicePointResponse, int64, error) {
+	rows, total, err := s.repo.List(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]models.ServicePointResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, row.Response())
 	}
-	return out, nil
-}
-
-func servicePointFromRequest(id uuid.UUID, req models.ServicePointWriteRequest) (*models.ServicePoint, error) {
-	fields := map[string]string{}
-	name := validateName(fields, "name", req.Name, 255)
-	if req.DepartmentID == uuid.Nil {
-		fields["department_id"] = "department_id is required"
-	}
-	lat, lng := validateLocation(fields, req.Location)
-	if len(fields) > 0 {
-		return nil, Invalid("validation failed", fields)
-	}
-	return &models.ServicePoint{
-		ID:           id,
-		Name:         name,
-		DepartmentID: req.DepartmentID,
-		Latitude:     lat,
-		Longitude:    lng,
-	}, nil
+	return out, total, nil
 }
 
 func validateLocation(fields map[string]string, loc *models.LocationInput) (float64, float64) {

@@ -29,12 +29,13 @@ func (r *assignmentRepository) Create(ctx context.Context, row *models.ResourceS
 
 func (r *assignmentRepository) Update(ctx context.Context, row *models.ResourceShiftAssignment) error {
 	res := r.db.WithContext(ctx).Model(&models.ResourceShiftAssignment{}).Where("id = ?", row.ID).Updates(map[string]any{
-		"resource_id": row.ResourceID,
-		"user_id":     row.UserID,
-		"shift_id":    row.ShiftID,
-		"start_at":    row.StartAt,
-		"end_at":      row.EndAt,
-		"status":      row.Status,
+		"resource_id":     row.ResourceID,
+		"user_id":         row.UserID,
+		"partner_user_id": row.PartnerUserID,
+		"shift_id":        row.ShiftID,
+		"start_at":        row.StartAt,
+		"end_at":          row.EndAt,
+		"status":          row.Status,
 	})
 	if res.Error != nil {
 		return res.Error

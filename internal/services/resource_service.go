@@ -2,8 +2,12 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/automax/registry/internal/models"
 	"github.com/automax/registry/internal/repository"
@@ -23,10 +27,41 @@ type ResourceService struct {
 	types     repository.ResourceTypeRepository
 	points    repository.ServicePointRepository
 	state     ResourceStateCache
+	pub       Publisher
 }
 
 func NewResourceService(resources repository.ResourceRepository, things repository.ThingRepository, types repository.ResourceTypeRepository, points repository.ServicePointRepository) *ResourceService {
 	return &ResourceService{resources: resources, things: things, types: types, points: points}
+}
+
+func resourceWriteErr(err error, missingIsNotFound bool) error {
+	switch repository.UniqueConstraint(err) {
+	case "uq_resource_unit_code":
+		return Conflict("a unit with this unit id already exists")
+	case "":
+	default:
+		return Conflict("a resource already exists for this thing")
+	}
+	if repository.IsForeignKeyViolation(err) {
+		if repository.ConstraintName(err) == "fk_resource_shift" {
+			return Invalid("validation failed", map[string]string{"shift_id": "shift not found"})
+		}
+		return Invalid("validation failed", map[string]string{"resource_type_id": "resource type not found"})
+	}
+	if repository.IsNotFound(err) {
+		if missingIsNotFound {
+			return NotFound("resource not found")
+		}
+		return Invalid("validation failed", map[string]string{"thing_id": "thing_id does not match a registry thing"})
+	}
+	return err
+}
+
+func (s *ResourceService) UsePublisher(pub Publisher) {
+	if s == nil {
+		return
+	}
+	s.pub = pub
 }
 
 // UseStateCache keeps the DSP-01 status cache aligned with resource create, update, and delete.
@@ -38,25 +73,27 @@ func (s *ResourceService) UseStateCache(cache ResourceStateCache) {
 }
 
 func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRequest) (*models.ResourceResponse, error) {
-	row, err := s.prepare(ctx, uuid.Nil, req)
+	createdThing, err := s.ensureThing(ctx, &req)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.resources.Create(ctx, row); err != nil {
-		if repository.IsUniqueViolation(err) {
-			return nil, Conflict("a resource already exists for this thing")
-		}
-		if repository.IsForeignKeyViolation(err) {
-			return nil, Invalid("validation failed", map[string]string{"resource_type_id": "resource type not found"})
-		}
-		if repository.IsNotFound(err) {
-			return nil, Invalid("validation failed", map[string]string{"thing_id": "thing_id does not match a registry thing"})
-		}
+	row, err := s.prepare(ctx, uuid.Nil, req)
+	if err != nil {
+		s.rollbackThing(ctx, createdThing)
 		return nil, err
+	}
+	if err := applyResourceDetails(row, nil, req); err != nil {
+		s.rollbackThing(ctx, createdThing)
+		return nil, err
+	}
+	if err := s.resources.Create(ctx, row); err != nil {
+		s.rollbackThing(ctx, createdThing)
+		return nil, resourceWriteErr(err, false)
 	}
 	log.Printf("registry: resource created id=%s thing_id=%s resource_type_id=%s status=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status)
 	s.remember(ctx, row)
 	resp := row.Response()
+	publishEvent(s.pub, models.SubjectResourceCreated, row.ID, resp)
 	return &resp, nil
 }
 
@@ -68,25 +105,26 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.ensureThing(ctx, &req); err != nil {
+		return nil, err
+	}
 	row, err := s.prepare(ctx, id, req)
 	if err != nil {
 		return nil, err
 	}
+	if err := applyResourceDetails(row, current, req); err != nil {
+		return nil, err
+	}
 	if err := s.resources.Update(ctx, row, current.ThingID); err != nil {
-		if repository.IsUniqueViolation(err) {
-			return nil, Conflict("a resource already exists for this thing")
-		}
-		if repository.IsForeignKeyViolation(err) {
-			return nil, Invalid("validation failed", map[string]string{"resource_type_id": "resource type not found"})
-		}
 		if repository.IsNotFound(err) {
 			return nil, NotFound("resource not found")
 		}
-		return nil, err
+		return nil, resourceWriteErr(err, true)
 	}
 	log.Printf("registry: resource updated id=%s thing_id=%s resource_type_id=%s status=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status)
 	s.remember(ctx, row)
 	resp := row.Response()
+	publishEvent(s.pub, models.SubjectResourceUpdated, row.ID, resp)
 	return &resp, nil
 }
 
@@ -107,6 +145,7 @@ func (s *ResourceService) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 	log.Printf("registry: resource deleted id=%s", id)
 	s.forget(ctx, id)
+	publishEvent(s.pub, models.SubjectResourceDeleted, id, nil)
 	return nil
 }
 
@@ -140,23 +179,23 @@ func (s *ResourceService) Get(ctx context.Context, id uuid.UUID) (*models.Resour
 	return &resp, nil
 }
 
-func (s *ResourceService) List(ctx context.Context, filter models.ResourceListFilter) ([]models.ResourceResponse, error) {
+func (s *ResourceService) List(ctx context.Context, filter models.ResourceListFilter) ([]models.ResourceResponse, int64, error) {
 	if filter.Status != "" {
 		fields := map[string]string{}
 		filter.Status = choice(fields, "status", filter.Status, "", resourceStatuses...)
 		if len(fields) > 0 {
-			return nil, Invalid("validation failed", fields)
+			return nil, 0, Invalid("validation failed", fields)
 		}
 	}
-	rows, err := s.resources.List(ctx, filter)
+	rows, total, err := s.resources.List(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]models.ResourceResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, row.Response())
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *ResourceService) prepare(ctx context.Context, id uuid.UUID, req models.ResourceWriteRequest) (*models.Resource, error) {
@@ -203,7 +242,118 @@ func (s *ResourceService) prepare(ctx context.Context, id uuid.UUID, req models.
 		ResourceTypeID: req.ResourceTypeID,
 		ServicePointID: req.ServicePointID,
 		Status:         status,
+		Classification: models.JSON(`[]`),
+		IsActive:       true,
 	}, nil
+}
+
+// ensureThing links an existing thing, renames it, or creates a vehicle thing
+// when the unit form sends a name and no thing_id. created is set only when
+// this call inserted the thing, so the caller can remove it if the resource write fails.
+func (s *ResourceService) ensureThing(ctx context.Context, req *models.ResourceWriteRequest) (created uuid.UUID, err error) {
+	if req.ThingID != uuid.Nil {
+		if req.Name != nil {
+			if err := s.renameThing(ctx, req.ThingID, *req.Name); err != nil {
+				return uuid.Nil, err
+			}
+		}
+		return uuid.Nil, nil
+	}
+	name := ""
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	fields := map[string]string{}
+	if name == "" {
+		fields["thing_id"] = "thing_id is required"
+		fields["name"] = "name is required when thing_id is empty"
+	}
+	if req.ResourceTypeID == uuid.Nil {
+		fields["resource_type_id"] = "resource_type_id is required"
+	}
+	if len(fields) > 0 {
+		return uuid.Nil, Invalid("validation failed", fields)
+	}
+	if utf8.RuneCountInString(name) > 255 {
+		return uuid.Nil, Invalid("validation failed", map[string]string{"name": "name must be at most 255 characters"})
+	}
+	typ, err := s.types.FindByID(ctx, req.ResourceTypeID)
+	if repository.IsNotFound(err) {
+		return uuid.Nil, Invalid("validation failed", map[string]string{"resource_type_id": "resource type not found"})
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	thing := &models.Thing{
+		Name:         name,
+		Type:         "vehicle",
+		IsTrackable:  true,
+		DepartmentID: typ.DepartmentID,
+		Metadata:     models.JSON(`{}`),
+	}
+	if err := s.things.Create(ctx, thing); err != nil {
+		if repository.IsUniqueViolation(err) {
+			return uuid.Nil, Conflict("a thing with this name already exists")
+		}
+		return uuid.Nil, err
+	}
+	s.publishThing(*thing, models.SubjectThingCreated)
+	req.ThingID = thing.ID
+	return thing.ID, nil
+}
+
+func (s *ResourceService) renameThing(ctx context.Context, id uuid.UUID, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Invalid("validation failed", map[string]string{"name": "name is required"})
+	}
+	if utf8.RuneCountInString(name) > 255 {
+		return Invalid("validation failed", map[string]string{"name": "name must be at most 255 characters"})
+	}
+	thing, err := s.things.FindByID(ctx, id)
+	if repository.IsNotFound(err) {
+		return Invalid("validation failed", map[string]string{"thing_id": "thing_id does not match a registry thing"})
+	}
+	if err != nil {
+		return err
+	}
+	if thing.Name == name {
+		return nil
+	}
+	thing.Name = name
+	if err := s.things.Update(ctx, thing); err != nil {
+		if repository.IsUniqueViolation(err) {
+			return Conflict("a thing with this name already exists")
+		}
+		return err
+	}
+	s.publishThing(*thing, models.SubjectThingUpdated)
+	return nil
+}
+
+func (s *ResourceService) rollbackThing(ctx context.Context, id uuid.UUID) {
+	if id == uuid.Nil {
+		return
+	}
+	if err := s.things.Delete(ctx, id); err != nil {
+		log.Printf("registry: failed to roll back thing %s: %v", id, err)
+		return
+	}
+	s.publishThing(models.Thing{ID: id}, models.SubjectThingDeleted)
+}
+
+func (s *ResourceService) publishThing(thing models.Thing, subject string) {
+	if s == nil || s.pub == nil {
+		return
+	}
+	body, err := json.Marshal(thing.Event(subject, time.Now().UTC()))
+	if err != nil {
+		log.Printf("registry: failed to encode %s for thing %s: %v", subject, thing.ID, err)
+		return
+	}
+	if err := s.pub.Publish(subject, body); err != nil {
+		log.Printf("registry: failed to publish %s for thing %s: %v", subject, thing.ID, err)
+	}
 }
 
 func resourceDeleteMessage(e *repository.ResourceInUseError) string {
