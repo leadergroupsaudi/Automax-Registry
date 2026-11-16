@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/automax/registry/internal/caguar"
 	"github.com/automax/registry/internal/models"
+	"github.com/automax/registry/internal/repository"
 	"github.com/google/uuid"
 )
 
@@ -18,11 +21,14 @@ var platePattern = regexp.MustCompile(`^[A-Z]{3}-[0-9]{4}$`)
 // Portal registers a device or a driver in the Caguar portal.
 type Portal interface {
 	RegisterDevice(ctx context.Context, device caguar.Device) error
+	UpdateDevice(ctx context.Context, currentUniqueID string, device caguar.Device) error
 	RegisterDriver(ctx context.Context, driver caguar.Driver) error
 }
 
 type thingCreator interface {
 	Create(ctx context.Context, req models.ThingCreateRequest) (*models.ThingResponse, error)
+	Get(ctx context.Context, id uuid.UUID) (*models.ThingResponse, error)
+	Update(ctx context.Context, id uuid.UUID, req models.ThingUpdateRequest) (*models.ThingResponse, error)
 }
 
 type refLinker interface {
@@ -35,14 +41,23 @@ type DevicePortal struct {
 	refs   refLinker
 	owners interface {
 		CountOtherOwners(ctx context.Context, system, externalID string, thingID uuid.UUID) (int64, error)
+		FindByThingSystem(ctx context.Context, thingID uuid.UUID, system string) (*models.ThingExternalRef, error)
+		UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error
 	}
 	portal Portal
 }
 
 func NewDevicePortal(things thingCreator, refs refLinker, owners interface {
 	CountOtherOwners(ctx context.Context, system, externalID string, thingID uuid.UUID) (int64, error)
+	FindByThingSystem(ctx context.Context, thingID uuid.UUID, system string) (*models.ThingExternalRef, error)
+	UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error
 }, portal Portal) *DevicePortal {
 	return &DevicePortal{things: things, refs: refs, owners: owners, portal: portal}
+}
+
+// Enabled reports whether device registration can reach Caguar.
+func (s *DevicePortal) Enabled() bool {
+	return s != nil && s.portal != nil
 }
 
 // DeviceRegistration is the registry body for one Caguar device.
@@ -104,7 +119,6 @@ func (s *DevicePortal) Register(ctx context.Context, req DeviceRegistration) (*D
 		Phone:         strings.TrimSpace(req.Phone),
 		Model:         strings.TrimSpace(req.Model),
 		Contact:       strings.TrimSpace(req.Contact),
-		GroupIDs:      []int{},
 		ZoneIDs:       []int{},
 		Attributes:    map[string]any{},
 	}); err != nil {
@@ -139,15 +153,173 @@ func (s *DevicePortal) Register(ctx context.Context, req DeviceRegistration) (*D
 		return nil, err
 	}
 	log.Printf("registry: caguar device registered thing_id=%s unique_id=%s name=%s tracker_type=%s", thing.ID, uniqueID, name, tracker)
-	return &DeviceResult{
-		ThingID:       thing.ID,
+	return deviceResult(thing.ID, name, uniqueID, req.DepartmentID, tracker, plate, chassis), nil
+}
+
+// Update changes the device in Caguar and the local thing. thingID is the id returned by register.
+func (s *DevicePortal) Update(ctx context.Context, thingID uuid.UUID, req DeviceRegistration) (*DeviceResult, error) {
+	if s == nil || s.portal == nil {
+		return nil, Unavailable("caguar is not configured")
+	}
+	if thingID == uuid.Nil {
+		return nil, Invalid("validation failed", map[string]string{"id": "id is required"})
+	}
+	name, uniqueID, tracker, plate, chassis, status, category, disabled, fields := normalizeDevice(req)
+	if len(fields) > 0 {
+		return nil, Invalid("validation failed", fields)
+	}
+	thing, err := s.things.Get(ctx, thingID)
+	if err != nil {
+		return nil, err
+	}
+	ref, err := s.owners.FindByThingSystem(ctx, thingID, models.ExternalSystemTraccar)
+	if repository.IsNotFound(err) {
+		return nil, NotFound("device is not linked to caguar")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ref.ExternalID != uniqueID {
+		owners, err := s.owners.CountOtherOwners(ctx, models.ExternalSystemTraccar, uniqueID, thingID)
+		if err != nil {
+			return nil, err
+		}
+		if owners > 0 {
+			return nil, Conflict("external id is already linked to another thing")
+		}
+	}
+	if err := s.portal.UpdateDevice(ctx, ref.ExternalID, caguar.Device{
 		Name:          name,
 		UniqueID:      uniqueID,
-		DepartmentID:  req.DepartmentID,
+		Status:        status,
+		Disabled:      disabled,
+		Category:      category,
 		TrackerType:   tracker,
 		PlateNumber:   plate,
 		ChassisNumber: chassis,
-	}, nil
+		Phone:         strings.TrimSpace(req.Phone),
+		Model:         strings.TrimSpace(req.Model),
+		Contact:       strings.TrimSpace(req.Contact),
+	}); err != nil {
+		var remote *caguar.RemoteError
+		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
+			return nil, NotFound("device was not found in caguar")
+		}
+		return nil, portalErr("device", uniqueID, err)
+	}
+
+	meta, err := json.Marshal(map[string]string{
+		"unique_id":      uniqueID,
+		"tracker_type":   tracker,
+		"plate_number":   plate,
+		"chassis_number": chassis,
+	})
+	if err != nil {
+		return nil, err
+	}
+	updated, err := s.things.Update(ctx, thingID, models.ThingUpdateRequest{
+		Name:         name,
+		Type:         thing.Type,
+		IsTrackable:  thing.IsTrackable,
+		DepartmentID: req.DepartmentID,
+		GroupID:      thing.GroupID,
+		Metadata:     models.JSON(meta),
+	})
+	if err != nil {
+		log.Printf("registry: caguar device updated but local thing failed thing_id=%s unique_id=%s err=%v", thingID, uniqueID, err)
+		return nil, err
+	}
+	if ref.ExternalID != uniqueID {
+		if err := s.owners.UpdateExternalID(ctx, ref.ID, uniqueID, time.Now().UTC()); err != nil {
+			log.Printf("registry: caguar device updated but external ref failed thing_id=%s unique_id=%s err=%v", thingID, uniqueID, err)
+			return nil, err
+		}
+	}
+	log.Printf("registry: caguar device updated thing_id=%s unique_id=%s name=%s tracker_type=%s", updated.ID, uniqueID, name, tracker)
+	return deviceResult(updated.ID, name, uniqueID, req.DepartmentID, tracker, plate, chassis), nil
+}
+
+// Attach registers a Caguar device for a unit that does not have an identifier yet.
+func (s *DevicePortal) Attach(ctx context.Context, thingID uuid.UUID, req DeviceRegistration) (*DeviceResult, error) {
+	if s == nil || s.portal == nil {
+		return nil, Unavailable("caguar is not configured")
+	}
+	if thingID == uuid.Nil {
+		return nil, Invalid("validation failed", map[string]string{"id": "id is required"})
+	}
+	name, uniqueID, tracker, plate, chassis, status, category, disabled, fields := normalizeDevice(req)
+	if len(fields) > 0 {
+		return nil, Invalid("validation failed", fields)
+	}
+	thing, err := s.things.Get(ctx, thingID)
+	if err != nil {
+		return nil, err
+	}
+	owners, err := s.owners.CountOtherOwners(ctx, models.ExternalSystemTraccar, uniqueID, thingID)
+	if err != nil {
+		return nil, err
+	}
+	if owners > 0 {
+		return nil, Conflict("external id is already linked to another thing")
+	}
+	if err := s.portal.RegisterDevice(ctx, caguar.Device{
+		Name:          name,
+		UniqueID:      uniqueID,
+		Status:        status,
+		Disabled:      disabled,
+		Category:      category,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: chassis,
+		Phone:         strings.TrimSpace(req.Phone),
+		Model:         strings.TrimSpace(req.Model),
+		Contact:       strings.TrimSpace(req.Contact),
+		ZoneIDs:       []int{},
+		Attributes:    map[string]any{},
+	}); err != nil {
+		return nil, portalErr("device", uniqueID, err)
+	}
+	meta, err := json.Marshal(map[string]string{
+		"unique_id":      uniqueID,
+		"tracker_type":   tracker,
+		"plate_number":   plate,
+		"chassis_number": chassis,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.things.Update(ctx, thingID, models.ThingUpdateRequest{
+		Name:         name,
+		Type:         thing.Type,
+		IsTrackable:  thing.IsTrackable,
+		DepartmentID: req.DepartmentID,
+		GroupID:      thing.GroupID,
+		Metadata:     models.JSON(meta),
+	}); err != nil {
+		log.Printf("registry: caguar device registered but local thing failed thing_id=%s unique_id=%s err=%v", thingID, uniqueID, err)
+		return nil, err
+	}
+	if _, _, err := s.refs.Upsert(ctx, thingID, models.ExternalRefRequest{
+		ExternalSystem: models.ExternalSystemTraccar,
+		ExternalID:     uniqueID,
+	}); err != nil {
+		log.Printf("registry: caguar device registered but external ref failed thing_id=%s unique_id=%s err=%v", thingID, uniqueID, err)
+		return nil, err
+	}
+	log.Printf("registry: caguar device attached thing_id=%s unique_id=%s name=%s", thingID, uniqueID, name)
+	return deviceResult(thingID, name, uniqueID, req.DepartmentID, tracker, plate, chassis), nil
+}
+
+func deviceResult(thingID uuid.UUID, name, uniqueID string, departmentID uuid.UUID, tracker, plate, chassis string) *DeviceResult {
+	return &DeviceResult{
+		ThingID:       thingID,
+		Name:          name,
+		UniqueID:      uniqueID,
+		DepartmentID:  departmentID,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: chassis,
+	}
 }
 
 // DriverRegistration is the registry body for one Caguar driver.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,8 +17,9 @@ import (
 
 const maxErrorBody = 512
 
-// Device is the body Caguar stores for POST /api/devices.
+// Device is the body Caguar stores for POST /api/devices and PUT /api/devices/{id}.
 type Device struct {
+	ID            int            `json:"id,omitempty"`
 	Name          string         `json:"name"`
 	UniqueID      string         `json:"uniqueId"`
 	Status        string         `json:"status,omitempty"`
@@ -29,7 +31,7 @@ type Device struct {
 	Phone         string         `json:"phone"`
 	Model         string         `json:"model"`
 	Contact       string         `json:"contact"`
-	GroupIDs      []int          `json:"groupIds"`
+	GroupIDs      []int          `json:"groupIds,omitempty"`
 	ZoneIDs       []int          `json:"zoneIds"`
 	CalendarID    int            `json:"calendarId"`
 	Attributes    map[string]any `json:"attributes"`
@@ -39,6 +41,15 @@ type Device struct {
 type Driver struct {
 	Name     string `json:"name"`
 	UniqueID string `json:"uniqueId"`
+}
+
+// Position is the latest fix Caguar returns from GET /api/positions.
+type Position struct {
+	DeviceID  int     `json:"deviceId"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	FixTime   string  `json:"fixTime"`
+	Valid     *bool   `json:"valid"`
 }
 
 // RemoteError is a non-success response from the Caguar portal.
@@ -89,8 +100,9 @@ func NewAccount(baseURL, token, username, password string) *Client {
 }
 
 func (c *Client) RegisterDevice(ctx context.Context, device Device) error {
-	if device.GroupIDs == nil {
-		device.GroupIDs = []int{}
+	// An empty groupIds array makes Caguar return a generic 400. Omit it unless groups were chosen.
+	if len(device.GroupIDs) == 0 {
+		device.GroupIDs = nil
 	}
 	if device.ZoneIDs == nil {
 		device.ZoneIDs = []int{}
@@ -101,26 +113,110 @@ func (c *Client) RegisterDevice(ctx context.Context, device Device) error {
 	return c.post(ctx, "/api/devices", device)
 }
 
+// UpdateDevice loads the portal device by its current unique id, then sends PUT /api/devices/{id}.
+// Group, zone, calendar, and attribute values already stored in Caguar are kept.
+// Status is replaced only when the caller set one.
+func (c *Client) UpdateDevice(ctx context.Context, currentUniqueID string, device Device) error {
+	currentUniqueID = strings.TrimSpace(currentUniqueID)
+	if currentUniqueID == "" {
+		currentUniqueID = device.UniqueID
+	}
+	found, err := c.findDevice(ctx, currentUniqueID)
+	if err != nil {
+		return err
+	}
+	found.Name = device.Name
+	found.UniqueID = device.UniqueID
+	if strings.TrimSpace(device.Status) != "" {
+		found.Status = device.Status
+	}
+	found.Disabled = device.Disabled
+	found.Category = device.Category
+	found.TrackerType = device.TrackerType
+	found.PlateNumber = device.PlateNumber
+	found.ChassisNumber = device.ChassisNumber
+	found.Phone = device.Phone
+	found.Model = device.Model
+	found.Contact = device.Contact
+	if found.GroupIDs == nil {
+		found.GroupIDs = []int{}
+	}
+	if found.ZoneIDs == nil {
+		found.ZoneIDs = []int{}
+	}
+	if found.Attributes == nil {
+		found.Attributes = map[string]any{}
+	}
+	_, err = c.send(ctx, http.MethodPut, "/api/devices/"+strconv.Itoa(found.ID), found)
+	return err
+}
+
 func (c *Client) RegisterDriver(ctx context.Context, driver Driver) error {
 	return c.post(ctx, "/api/drivers", driver)
 }
 
+// Devices returns every device the signed-in account can see.
+func (c *Client) Devices(ctx context.Context) ([]Device, error) {
+	raw, err := c.send(ctx, http.MethodGet, "/api/devices", nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodeDevices(raw)
+}
+
+// Positions returns the latest fix for each visible device.
+func (c *Client) Positions(ctx context.Context) ([]Position, error) {
+	raw, err := c.send(ctx, http.MethodGet, "/api/positions", nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodePositions(raw)
+}
+
 func (c *Client) post(ctx context.Context, path string, body any) error {
+	_, err := c.send(ctx, http.MethodPost, path, body)
+	return err
+}
+
+func (c *Client) findDevice(ctx context.Context, uniqueID string) (Device, error) {
+	q := url.Values{}
+	q.Set("uniqueId", uniqueID)
+	raw, err := c.send(ctx, http.MethodGet, "/api/devices?"+q.Encode(), nil)
+	if err != nil {
+		return Device{}, err
+	}
+	found, ok, err := decodeDevice(raw, uniqueID)
+	if err != nil {
+		return Device{}, err
+	}
+	if !ok {
+		return Device{}, &RemoteError{Status: http.StatusNotFound, Body: "device not found"}
+	}
+	return found, nil
+}
+
+func (c *Client) send(ctx context.Context, method, path string, body any) ([]byte, error) {
 	if c == nil || c.baseURL == "" {
-		return fmt.Errorf("caguar is not configured")
+		return nil, fmt.Errorf("caguar is not configured")
 	}
 	if err := c.ensureToken(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	raw, err := json.Marshal(body)
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 	if c.token != "" {
@@ -128,14 +224,109 @@ func (c *Client) post(ctx context.Context, path string, body any) error {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	payload, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &RemoteError{Status: resp.StatusCode, Body: strings.TrimSpace(string(payload))}
+	limit := maxErrorBody
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		limit = 1 << 20
 	}
-	return nil
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &RemoteError{Status: resp.StatusCode, Body: strings.TrimSpace(string(payload))}
+	}
+	return payload, nil
+}
+
+func decodeDevice(raw []byte, uniqueID string) (Device, bool, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return Device{}, false, nil
+	}
+	if raw[0] == '[' {
+		var devices []Device
+		if err := json.Unmarshal(raw, &devices); err != nil {
+			return Device{}, false, err
+		}
+		return pickDevice(devices, uniqueID)
+	}
+	var wrapped struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return Device{}, false, err
+	}
+	if len(bytes.TrimSpace(wrapped.Data)) > 0 && string(wrapped.Data) != "null" {
+		return decodeDevice(wrapped.Data, uniqueID)
+	}
+	var one Device
+	if err := json.Unmarshal(raw, &one); err != nil {
+		return Device{}, false, err
+	}
+	if one.ID == 0 {
+		return Device{}, false, nil
+	}
+	return one, true, nil
+}
+
+func decodeDevices(raw []byte) ([]Device, error) {
+	list, err := decodeList(raw)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	var devices []Device
+	if err := json.Unmarshal(list, &devices); err != nil {
+		return nil, err
+	}
+	return devices, nil
+}
+
+func decodePositions(raw []byte) ([]Position, error) {
+	list, err := decodeList(raw)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	var positions []Position
+	if err := json.Unmarshal(list, &positions); err != nil {
+		return nil, err
+	}
+	return positions, nil
+}
+
+func decodeList(raw []byte) (json.RawMessage, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	if raw[0] == '[' {
+		return raw, nil
+	}
+	var wrapped struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, err
+	}
+	data := bytes.TrimSpace(wrapped.Data)
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
+	}
+	if data[0] == '[' {
+		return data, nil
+	}
+	return nil, nil
+}
+
+func pickDevice(devices []Device, uniqueID string) (Device, bool, error) {
+	for _, device := range devices {
+		if device.ID != 0 && device.UniqueID == uniqueID {
+			return device, true, nil
+		}
+	}
+	if len(devices) == 1 && devices[0].ID != 0 {
+		return devices[0], true, nil
+	}
+	return Device{}, false, nil
 }
 
 func (c *Client) ensureToken(ctx context.Context) error {

@@ -19,7 +19,7 @@ info:
 
     ## What is not in this API yet
 
-    The database has a `dispatch_assignment` table (incident + unit, status `offered`, `accepted`, `rejected`, `expired`, `completed`, `cancelled`), but there is no HTTP route for it.
+    `POST /dispatch/assignments` offers a unit to an incident. Status `offered` sets the unit to `offered`. Status `accepted` sets the unit to `dispatched`. `rejected`, `expired`, `completed`, and `cancelled` return the unit to `available` when it has no other open assignment.
 
     There is also no route for the driver job steps **on the way**, **reached**, **in progress**, and **job done**.
     Resource status is only `available`, `offered`, `dispatched`, or `maintenance`.
@@ -72,6 +72,8 @@ tags:
     description: Duty windows. Not a driver's personal roster by itself.
   - name: Shift assignments
     description: Which driver is on which unit, for which shift.
+  - name: Dispatch assignments
+    description: Which unit is offered to which incident.
   - name: Positions
     description: Adapter only. Caguar posts tracker fixes here.
 
@@ -393,6 +395,58 @@ paths:
                         $ref: "#/components/schemas/DeviceResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /registry/devices/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    put:
+      tags: [Devices and drivers]
+      summary: Update a vehicle in Caguar and the local thing
+      description: |
+        `id` is the `thing_id` returned when the device was registered.
+        The body is the same as create. Caguar is updated first, then the local thing.
+        A changed `unique_id` is written onto the existing `traccar-go` link.
+        Requires Caguar to be configured.
+      operationId: updateDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRegistration"
+            example:
+              name: Engine 12
+              unique_id: "4289765883"
+              department_id: 11111111-1111-1111-1111-111111111111
+              tracker_type: gps
+              plate_number: ABC-1234
+              chassis_number: CH-100
+              phone: "+966500000000"
+              model: Fire engine
+              category: truck
+              disabled: false
+      responses:
+        "200":
+          description: Device updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/DeviceResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "502":
@@ -1053,8 +1107,9 @@ paths:
       tags: [Resources]
       summary: Register a unit
       description: |
-        `thing_id` must already exist. One thing can be only one resource.
-        Writing the resource copies type, station, and status onto that thing.
+        Send `thing_id` for an existing thing, or omit it and send `name` to create the vehicle thing.
+        `unique_id` is the tracker identifier. When Caguar is configured and `thing_id` is omitted, the unit is registered there with that identifier.
+        One thing can be only one resource. Writing the resource copies type, station, and status onto that thing.
       operationId: createResource
       requestBody:
         required: true
@@ -1154,7 +1209,10 @@ paths:
     put:
       tags: [Resources]
       summary: Replace a unit
-      description: Use this to move a unit to another station or to set `available`, `offered`, `dispatched`, or `maintenance`. This is not the driver job-step update.
+      description: |
+        Use this to move a unit to another station or to set `available`, `offered`, `dispatched`, or `maintenance`.
+        Send `unique_id` to change the tracker identifier in Caguar. Omit it to leave the stored identifier unchanged.
+        This is not the driver job-step update.
       operationId: updateResource
       requestBody:
         required: true
@@ -2435,6 +2493,9 @@ components:
           type: number
           format: double
           nullable: true
+        unique_id:
+          type: string
+          description: Tracker identifier linked to this unit. Empty when the unit has no Caguar device.
         created_at:
           type: string
           format: date-time
@@ -2452,6 +2513,19 @@ components:
         name:
           type: string
           description: Unit name. When thing_id is set, this renames that thing.
+        department_id:
+          type: string
+          format: uuid
+          description: Department used when creating the Caguar device. Defaults to the unit type's department.
+        unique_id:
+          type: string
+          description: Tracker identifier. On update, a new value replaces the identifier in Caguar. An empty value leaves it unchanged.
+        tracker_type:
+          type: string
+          description: Caguar tracker type. Defaults to Vehicle.
+        chassis_number:
+          type: string
+          description: Required by Caguar when registering a device.
         resource_type_id:
           type: string
           format: uuid

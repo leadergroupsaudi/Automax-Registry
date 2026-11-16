@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/automax/registry/internal/caguar"
 	"github.com/automax/registry/internal/models"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 func TestDeviceRegisterValidatesAndSendsToCaguar(t *testing.T) {
@@ -63,6 +65,65 @@ func TestDeviceRegisterValidatesAndSendsToCaguar(t *testing.T) {
 	}
 }
 
+func TestDeviceUpdateUsesLinkedUniqueID(t *testing.T) {
+	dept := uuid.New()
+	thingID := uuid.New()
+	refID := uuid.New()
+	portal := &fakePortal{}
+	things := &fakeCreator{id: thingID, dept: dept}
+	owners := &recordingOwners{ref: &models.ThingExternalRef{
+		ID: refID, ThingID: thingID, ExternalSystem: models.ExternalSystemTraccar, ExternalID: "OLD-1",
+	}}
+	svc := NewDevicePortal(things, fakeLinker{}, owners, portal)
+
+	got, err := svc.Update(context.Background(), thingID, DeviceRegistration{
+		Name: " Engine 12 ", UniqueID: "NEW-1", DepartmentID: dept,
+		TrackerType: "gps", PlateNumber: "abc-1234", ChassisNumber: "CH-100",
+		Phone: "+966500000000", Model: "Fire engine", Category: "truck",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThingID != thingID || got.UniqueID != "NEW-1" || got.PlateNumber != "ABC-1234" || got.Name != "Engine 12" {
+		t.Fatalf("result %#v", got)
+	}
+	if portal.lookup != "OLD-1" || portal.device.UniqueID != "NEW-1" || portal.device.Category != "truck" || portal.device.Phone != "+966500000000" {
+		t.Fatalf("caguar lookup %q device %#v", portal.lookup, portal.device)
+	}
+	if owners.externalID != "NEW-1" {
+		t.Fatalf("external id %q", owners.externalID)
+	}
+	if things.updated == nil || things.updated.Type != "vehicle" || !things.updated.IsTrackable || string(things.updated.Metadata) == "" {
+		t.Fatalf("thing %#v", things.updated)
+	}
+
+	owners.owners = 1
+	_, err = svc.Update(context.Background(), thingID, DeviceRegistration{
+		Name: "Engine 12", UniqueID: "TAKEN", DepartmentID: dept,
+		TrackerType: "gps", PlateNumber: "ABC-1234", ChassisNumber: "CH-100",
+	})
+	var se *Error
+	if !errors.As(err, &se) || se.Kind != KindConflict {
+		t.Fatalf("conflict %#v", err)
+	}
+
+	if _, err := NewDevicePortal(things, fakeLinker{}, owners, nil).Update(context.Background(), thingID, DeviceRegistration{
+		Name: "Engine 12", UniqueID: "NEW-1", DepartmentID: dept,
+		TrackerType: "gps", PlateNumber: "ABC-1234", ChassisNumber: "CH-100",
+	}); err == nil {
+		t.Fatal("expected unconfigured caguar")
+	}
+
+	missing := &recordingOwners{}
+	_, err = NewDevicePortal(things, fakeLinker{}, missing, portal).Update(context.Background(), thingID, DeviceRegistration{
+		Name: "Engine 12", UniqueID: "NEW-1", DepartmentID: dept,
+		TrackerType: "gps", PlateNumber: "ABC-1234", ChassisNumber: "CH-100",
+	})
+	if !errors.As(err, &se) || se.Kind != KindNotFound {
+		t.Fatalf("missing link %#v", err)
+	}
+}
+
 func TestDriverRegisterRequiresNameAndUniqueID(t *testing.T) {
 	svc := NewDriverPortal(&fakePortal{})
 	_, err := svc.Register(context.Background(), DriverRegistration{})
@@ -112,10 +173,17 @@ func TestFindNearestServicePoints(t *testing.T) {
 type fakePortal struct {
 	device caguar.Device
 	driver caguar.Driver
+	lookup string
 	err    error
 }
 
 func (f *fakePortal) RegisterDevice(_ context.Context, device caguar.Device) error {
+	f.device = device
+	return f.err
+}
+
+func (f *fakePortal) UpdateDevice(_ context.Context, currentUniqueID string, device caguar.Device) error {
+	f.lookup = currentUniqueID
 	f.device = device
 	return f.err
 }
@@ -125,10 +193,27 @@ func (f *fakePortal) RegisterDriver(_ context.Context, driver caguar.Driver) err
 	return f.err
 }
 
-type fakeCreator struct{ id uuid.UUID }
+type fakeCreator struct {
+	id      uuid.UUID
+	dept    uuid.UUID
+	updated *models.ThingUpdateRequest
+}
 
-func (f fakeCreator) Create(_ context.Context, req models.ThingCreateRequest) (*models.ThingResponse, error) {
+func (f *fakeCreator) Create(_ context.Context, req models.ThingCreateRequest) (*models.ThingResponse, error) {
 	return &models.ThingResponse{ID: f.id, Name: req.Name, DepartmentID: req.DepartmentID}, nil
+}
+
+func (f *fakeCreator) Get(_ context.Context, id uuid.UUID) (*models.ThingResponse, error) {
+	dept := f.dept
+	if dept == uuid.Nil {
+		dept = id
+	}
+	return &models.ThingResponse{ID: id, Type: "vehicle", IsTrackable: true, DepartmentID: dept}, nil
+}
+
+func (f *fakeCreator) Update(_ context.Context, id uuid.UUID, req models.ThingUpdateRequest) (*models.ThingResponse, error) {
+	f.updated = &req
+	return &models.ThingResponse{ID: id, Name: req.Name, Type: req.Type, IsTrackable: req.IsTrackable, DepartmentID: req.DepartmentID, Metadata: req.Metadata}, nil
 }
 
 type fakeLinker struct{}
@@ -141,6 +226,36 @@ type fakeOwners struct{}
 
 func (fakeOwners) CountOtherOwners(context.Context, string, string, uuid.UUID) (int64, error) {
 	return 0, nil
+}
+
+func (fakeOwners) FindByThingSystem(context.Context, uuid.UUID, string) (*models.ThingExternalRef, error) {
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (fakeOwners) UpdateExternalID(context.Context, uuid.UUID, string, time.Time) error {
+	return nil
+}
+
+type recordingOwners struct {
+	ref        *models.ThingExternalRef
+	externalID string
+	owners     int64
+}
+
+func (f *recordingOwners) CountOtherOwners(context.Context, string, string, uuid.UUID) (int64, error) {
+	return f.owners, nil
+}
+
+func (f *recordingOwners) FindByThingSystem(context.Context, uuid.UUID, string) (*models.ThingExternalRef, error) {
+	if f.ref == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return f.ref, nil
+}
+
+func (f *recordingOwners) UpdateExternalID(_ context.Context, _ uuid.UUID, externalID string, _ time.Time) error {
+	f.externalID = externalID
+	return nil
 }
 
 type stubPoints struct {

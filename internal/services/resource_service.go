@@ -26,6 +26,8 @@ type ResourceService struct {
 	things    repository.ThingRepository
 	types     repository.ResourceTypeRepository
 	points    repository.ServicePointRepository
+	devices   *DevicePortal
+	locate    *CaguarSync
 	state     ResourceStateCache
 	pub       Publisher
 }
@@ -64,6 +66,33 @@ func (s *ResourceService) UsePublisher(pub Publisher) {
 	s.pub = pub
 }
 
+// UseDevicePortal registers a new unit in Caguar when the form does not already name a thing.
+func (s *ResourceService) UseDevicePortal(portal *DevicePortal) {
+	if s == nil {
+		return
+	}
+	s.devices = portal
+}
+
+// UseCaguarSync reads the latest Caguar fix before a unit is returned.
+func (s *ResourceService) UseCaguarSync(sync *CaguarSync) {
+	if s == nil {
+		return
+	}
+	s.locate = sync
+}
+
+// refreshLocations gives Caguar a short chance to update coordinates.
+// A slow portal must not hold the unit list open until the client gives up.
+func (s *ResourceService) refreshLocations(ctx context.Context) {
+	if s == nil || s.locate == nil {
+		return
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	s.locate.Refresh(syncCtx)
+}
+
 // UseStateCache keeps the DSP-01 status cache aligned with resource create, update, and delete.
 func (s *ResourceService) UseStateCache(cache ResourceStateCache) {
 	if s == nil {
@@ -73,6 +102,10 @@ func (s *ResourceService) UseStateCache(cache ResourceStateCache) {
 }
 
 func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRequest) (*models.ResourceResponse, error) {
+	fromCaguar, err := s.registerCaguar(ctx, &req)
+	if err != nil {
+		return nil, err
+	}
 	createdThing, err := s.ensureThing(ctx, &req)
 	if err != nil {
 		return nil, err
@@ -87,7 +120,11 @@ func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRe
 		return nil, err
 	}
 	if err := s.resources.Create(ctx, row); err != nil {
-		s.rollbackThing(ctx, createdThing)
+		if fromCaguar {
+			s.rollbackThing(ctx, req.ThingID)
+		} else {
+			s.rollbackThing(ctx, createdThing)
+		}
 		return nil, resourceWriteErr(err, false)
 	}
 	log.Printf("registry: resource created id=%s thing_id=%s resource_type_id=%s status=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status)
@@ -106,6 +143,9 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 		return nil, err
 	}
 	if _, err := s.ensureThing(ctx, &req); err != nil {
+		return nil, err
+	}
+	if err := s.updateIdentifier(ctx, current, &req); err != nil {
 		return nil, err
 	}
 	row, err := s.prepare(ctx, id, req)
@@ -168,6 +208,7 @@ func (s *ResourceService) forget(ctx context.Context, id uuid.UUID) {
 }
 
 func (s *ResourceService) Get(ctx context.Context, id uuid.UUID) (*models.ResourceResponse, error) {
+	s.refreshLocations(ctx)
 	row, err := s.resources.FindByID(ctx, id)
 	if repository.IsNotFound(err) {
 		return nil, NotFound("resource not found")
@@ -180,6 +221,7 @@ func (s *ResourceService) Get(ctx context.Context, id uuid.UUID) (*models.Resour
 }
 
 func (s *ResourceService) List(ctx context.Context, filter models.ResourceListFilter) ([]models.ResourceResponse, int64, error) {
+	s.refreshLocations(ctx)
 	if filter.Status != "" {
 		fields := map[string]string{}
 		filter.Status = choice(fields, "status", filter.Status, "", resourceStatuses...)
@@ -245,6 +287,111 @@ func (s *ResourceService) prepare(ctx context.Context, id uuid.UUID, req models.
 		Classification: models.JSON(`[]`),
 		IsActive:       true,
 	}, nil
+}
+
+// updateIdentifier changes the tracker identifier on an existing unit.
+// An empty value leaves the stored identifier unchanged.
+func (s *ResourceService) updateIdentifier(ctx context.Context, current *models.Resource, req *models.ResourceWriteRequest) error {
+	if s == nil || s.devices == nil || !s.devices.Enabled() || current == nil || req == nil {
+		return nil
+	}
+	next := strings.TrimSpace(req.UniqueID)
+	if next == "" || next == strings.TrimSpace(current.UniqueID) {
+		return nil
+	}
+	thing, err := s.things.FindByID(ctx, current.ThingID)
+	if err != nil {
+		return err
+	}
+	meta := map[string]string{}
+	if len(thing.Metadata) > 0 {
+		_ = json.Unmarshal(thing.Metadata, &meta)
+	}
+	tracker := strings.TrimSpace(req.TrackerType)
+	if tracker == "" {
+		tracker = strings.TrimSpace(meta["tracker_type"])
+	}
+	if tracker == "" {
+		tracker = "Vehicle"
+	}
+	chassis := strings.TrimSpace(req.ChassisNumber)
+	if chassis == "" {
+		chassis = strings.TrimSpace(meta["chassis_number"])
+	}
+	plate := current.PlateNumber
+	if req.PlateNumber != nil && strings.TrimSpace(*req.PlateNumber) != "" {
+		plate = strings.TrimSpace(*req.PlateNumber)
+	}
+	name := current.Name
+	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+		name = strings.TrimSpace(*req.Name)
+	}
+	dept := req.DepartmentID
+	if dept == uuid.Nil {
+		dept = thing.DepartmentID
+	}
+	registration := DeviceRegistration{
+		Name:          name,
+		UniqueID:      next,
+		DepartmentID:  dept,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: chassis,
+	}
+	if strings.TrimSpace(current.UniqueID) == "" {
+		_, err = s.devices.Attach(ctx, current.ThingID, registration)
+	} else {
+		_, err = s.devices.Update(ctx, current.ThingID, registration)
+	}
+	if err != nil {
+		return err
+	}
+	current.UniqueID = next
+	log.Printf("registry: unit identifier updated thing_id=%s unique_id=%s", current.ThingID, next)
+	return nil
+}
+
+// registerCaguar sends a new unit to Caguar and keeps the returned thing id.
+// A unit that already has a thing id is left unchanged.
+func (s *ResourceService) registerCaguar(ctx context.Context, req *models.ResourceWriteRequest) (bool, error) {
+	if s == nil || s.devices == nil || !s.devices.Enabled() || req.ThingID != uuid.Nil {
+		return false, nil
+	}
+	name := ""
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	plate := ""
+	if req.PlateNumber != nil {
+		plate = *req.PlateNumber
+	}
+	dept := req.DepartmentID
+	if dept == uuid.Nil && req.ResourceTypeID != uuid.Nil {
+		typ, err := s.types.FindByID(ctx, req.ResourceTypeID)
+		if err == nil {
+			dept = typ.DepartmentID
+		}
+	}
+	tracker := strings.TrimSpace(req.TrackerType)
+	if tracker == "" {
+		tracker = "Vehicle"
+	}
+	result, err := s.devices.Register(ctx, DeviceRegistration{
+		Name:          name,
+		UniqueID:      strings.TrimSpace(req.UniqueID),
+		DepartmentID:  dept,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: strings.TrimSpace(req.ChassisNumber),
+	})
+	if err != nil {
+		return false, err
+	}
+	req.ThingID = result.ThingID
+	storedPlate := result.PlateNumber
+	req.PlateNumber = &storedPlate
+	log.Printf("registry: unit registered in caguar thing_id=%s unique_id=%s", result.ThingID, result.UniqueID)
+	return true, nil
 }
 
 // ensureThing links an existing thing, renames it, or creates a vehicle thing

@@ -307,6 +307,10 @@ func NewResourceHandler(svc *services.ResourceService) *ResourceHandler {
 }
 
 func (h *ResourceHandler) Create(c *fiber.Ctx) error {
+	adoptCaguarIdentifier(c)
+	if err := requireUUIDString(c, "thing_id"); err != nil {
+		return err
+	}
 	var req models.ResourceWriteRequest
 	if err := c.BodyParser(&req); err != nil {
 		return badJSON(c)
@@ -322,6 +326,9 @@ func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	if err := requireUUIDString(c, "thing_id"); err != nil {
+		return err
 	}
 	var req models.ResourceWriteRequest
 	if err := c.BodyParser(&req); err != nil {

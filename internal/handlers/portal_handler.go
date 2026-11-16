@@ -26,6 +26,22 @@ func (h *DevicePortalHandler) Register(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusCreated, "device registered", row)
 }
 
+func (h *DevicePortalHandler) Update(c *fiber.Ctx) error {
+	id, err := pathID(c, "id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	var req services.DeviceRegistration
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	row, err := h.svc.Update(c.UserContext(), id, req)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "device updated", row)
+}
+
 type DriverPortalHandler struct {
 	svc *services.DriverPortal
 }

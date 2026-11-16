@@ -138,6 +138,13 @@ func TestDispatchValidationNotFoundAndMethod(t *testing.T) {
 			t.Fatalf("%s wrong type %#v", path.path, typed)
 		}
 	}
+	deviceAsThing := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", `{"thing_id":"DEVMWBS45IM5532"}`), http.StatusBadRequest)
+	if errorFields(t, deviceAsThing)["thing_id"] == "thing_id must be a UUID" {
+		t.Fatalf("phone identifier was rejected as a UUID %#v", deviceAsThing)
+	}
+	if errorFields(t, deviceAsThing)["name"] != "name is required when thing_id is empty" {
+		t.Fatalf("caguar id in thing_id %#v", deviceAsThing)
+	}
 
 	ids := map[string]string{
 		"/dispatch/resource-types/not-a-uuid":             "resource type id must be a UUID",

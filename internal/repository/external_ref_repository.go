@@ -19,12 +19,22 @@ type LinkedThing struct {
 	IsTrackable bool
 }
 
+// NamedExternalRef is one Caguar id joined to the registry thing name.
+type NamedExternalRef struct {
+	RefID      uuid.UUID
+	ThingID    uuid.UUID
+	ThingName  string
+	ExternalID string
+}
+
 type ExternalRefRepository interface {
 	FindLinkedThing(ctx context.Context, system, externalID string) (LinkedThing, error)
 	FindByThingSystem(ctx context.Context, thingID uuid.UUID, system string) (*models.ThingExternalRef, error)
 	CountOtherOwners(ctx context.Context, system, externalID string, thingID uuid.UUID) (int64, error)
+	ListNamed(ctx context.Context, system string) ([]NamedExternalRef, error)
 	Create(ctx context.Context, ref *models.ThingExternalRef) error
 	UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type externalRefRepository struct{ db *gorm.DB }
@@ -80,6 +90,28 @@ func (r *externalRefRepository) CountOtherOwners(ctx context.Context, system, ex
 
 func (r *externalRefRepository) Create(ctx context.Context, ref *models.ThingExternalRef) error {
 	return r.db.WithContext(ctx).Create(ref).Error
+}
+
+func (r *externalRefRepository) ListNamed(ctx context.Context, system string) ([]NamedExternalRef, error) {
+	var rows []NamedExternalRef
+	err := r.db.WithContext(ctx).
+		Table("thing_external_refs AS r").
+		Select("r.id AS ref_id, r.thing_id, t.name AS thing_name, r.external_id").
+		Joins("JOIN things t ON t.id = r.thing_id").
+		Where("r.external_system = ?", system).
+		Scan(&rows).Error
+	return rows, err
+}
+
+func (r *externalRefRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	res := r.db.WithContext(ctx).Delete(&models.ThingExternalRef{}, "id = ?", id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *externalRefRepository) UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error {

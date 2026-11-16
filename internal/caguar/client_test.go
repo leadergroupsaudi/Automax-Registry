@@ -47,7 +47,7 @@ func TestRegisterDeviceAndDriver(t *testing.T) {
 	if deviceBody["name"] != "Test Device Go" || deviceBody["uniqueId"] != "TESTGO123" || deviceBody["trackerType"] != "Vehicle" || deviceBody["plateNumber"] != "ABC-1234" {
 		t.Fatalf("device %#v", deviceBody)
 	}
-	if _, ok := deviceBody["groupIds"].([]any); !ok {
+	if _, ok := deviceBody["groupIds"]; ok {
 		t.Fatalf("groupIds %#v", deviceBody["groupIds"])
 	}
 	if auth != "Bearer secret-token" {
@@ -121,6 +121,49 @@ func TestLoginReadsTokenFromJSON(t *testing.T) {
 	}
 	if auth != "Bearer issued-token" {
 		t.Fatalf("auth %q", auth)
+	}
+}
+
+func TestUpdateDeviceKeepsPortalGroups(t *testing.T) {
+	var method, path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/devices":
+			if r.URL.Query().Get("uniqueId") != "OLD-1" {
+				t.Errorf("uniqueId %q", r.URL.Query().Get("uniqueId"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"data":[{"id":44,"name":"Old","uniqueId":"OLD-1","status":"online","groupIds":[7],"zoneIds":[3],"calendarId":2,"attributes":{"keep":true}}]}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/devices/44":
+			method = r.Method
+			path = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	err := New(srv.URL, "secret-token").UpdateDevice(context.Background(), "OLD-1", Device{
+		Name: "Engine 12", UniqueID: "NEW-1", Category: "truck", TrackerType: "gps",
+		PlateNumber: "ABC-1234", ChassisNumber: "CH-100", Phone: "+966500000000", Disabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/api/devices/44" {
+		t.Fatalf("method %s path %s", method, path)
+	}
+	if body["uniqueId"] != "NEW-1" || body["status"] != "online" || body["disabled"] != true {
+		t.Fatalf("body %#v", body)
+	}
+	groups, ok := body["groupIds"].([]any)
+	if !ok || len(groups) != 1 || groups[0] != float64(7) {
+		t.Fatalf("groups %#v", body["groupIds"])
 	}
 }
 

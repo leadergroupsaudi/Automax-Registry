@@ -16,6 +16,7 @@ type ResourceRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*models.Resource, error)
 	List(ctx context.Context, filter models.ResourceListFilter) ([]models.Resource, int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
+	SetStatus(ctx context.Context, id uuid.UUID, status string) error
 }
 
 type resourceRepository struct{ db *gorm.DB }
@@ -31,9 +32,11 @@ const resourceSelect = `
 	       r.description, r.radio_id, r.is_active, r.active_till_date, r.call_code,
 	       r.unit_code, r.location_id, r.classification_ids, r.gprs, r.sms, r.sms_vip, r.sim,
 	       r.driver_user_id, r.shift_id, r.partner_user_id,
+	       COALESCE(er.external_id, '') AS unique_id,
 	       r.created_at, r.updated_at
 	FROM resource r
 	JOIN things t ON t.id = r.thing_id
+	LEFT JOIN thing_external_refs er ON er.thing_id = r.thing_id AND er.external_system = 'traccar-go'
 `
 
 func (r *resourceRepository) Create(ctx context.Context, row *models.Resource) error {
@@ -229,6 +232,7 @@ type resourceScan struct {
 	PartnerUserID     *uuid.UUID
 	Latitude          *float64
 	Longitude         *float64
+	UniqueID          string `gorm:"column:unique_id"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -268,11 +272,30 @@ func (r *resourceRepository) query(ctx context.Context, sql string, args ...any)
 			PartnerUserID:     row.PartnerUserID,
 			Latitude:          row.Latitude,
 			Longitude:         row.Longitude,
+			UniqueID:          row.UniqueID,
 			CreatedAt:         row.CreatedAt,
 			UpdatedAt:         row.UpdatedAt,
 		})
 	}
 	return rows, nil
+}
+
+func (r *resourceRepository) SetStatus(ctx context.Context, id uuid.UUID, status string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row models.Resource
+		err := tx.Select("id", "thing_id", "resource_type_id", "service_point_id").First(&row, "id = ?", id).Error
+		if err != nil {
+			return err
+		}
+		res := tx.Model(&models.Resource{}).Where("id = ?", id).Update("status", status)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return applyThingResource(tx, row.ThingID, row.ResourceTypeID, row.ServicePointID, status)
+	})
 }
 
 func (r *resourceRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {

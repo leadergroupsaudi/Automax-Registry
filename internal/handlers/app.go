@@ -46,7 +46,8 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	if portal != nil {
 		portalAPI = portal
 	}
-	deviceHandler := NewDevicePortalHandler(services.NewDevicePortal(thingSvc, refSvc, refs, portalAPI))
+	devicePortal := services.NewDevicePortal(thingSvc, refSvc, refs, portalAPI)
+	deviceHandler := NewDevicePortalHandler(devicePortal)
 	driverHandler := NewDriverPortalHandler(services.NewDriverPortal(portalAPI))
 
 	resourceTypes := repository.NewResourceTypeRepository(db)
@@ -63,13 +64,21 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	shiftHandler := NewShiftHandler(services.NewShiftService(shifts))
 	resourceSvc := services.NewResourceService(resources, things, resourceTypes, servicePoints)
 	resourceSvc.UsePublisher(pub)
+	resourceSvc.UseDevicePortal(devicePortal)
+	if portal != nil {
+		resourceSvc.UseCaguarSync(services.NewCaguarSync(portal, refs, things))
+	}
 	assignmentSvc := services.NewAssignmentService(assignments, resources, shifts)
+	dispatchAssignments := repository.NewDispatchAssignmentRepository(db)
+	dispatchAssignmentSvc := services.NewDispatchAssignmentService(dispatchAssignments, resources)
 	if nearest != nil {
 		resourceSvc.UseStateCache(nearest)
 		assignmentSvc.UseDutyCache(nearest)
+		dispatchAssignmentSvc.UseStateCache(nearest)
 	}
 	resourceHandler := NewResourceHandler(resourceSvc)
 	assignmentHandler := NewAssignmentHandler(assignmentSvc)
+	dispatchAssignmentHandler := NewDispatchAssignmentHandler(dispatchAssignmentSvc)
 	var nearestHandler *NearestHandler
 	if nearest != nil {
 		nearestHandler = NewNearestHandler(nearest)
@@ -84,6 +93,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	registry.Delete("/things/:id", thingHandler.Delete)
 	registry.Post("/things/:id/external-refs", externalRefHandler.Upsert)
 	registry.Post("/devices", deviceHandler.Register)
+	registry.Put("/devices/:id", deviceHandler.Update)
 	registry.Post("/drivers", driverHandler.Register)
 	registry.Get("/things/:id/credentials", credentialHandler.List)
 	registry.Post("/things/:id/credentials", credentialHandler.Issue)
@@ -142,6 +152,12 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	dispatch.Get("/resource-shift-assignments/:id", assignmentHandler.Get)
 	dispatch.Put("/resource-shift-assignments/:id", assignmentHandler.Update)
 	dispatch.Delete("/resource-shift-assignments/:id", assignmentHandler.Delete)
+
+	dispatch.Get("/assignments", dispatchAssignmentHandler.List)
+	dispatch.Post("/assignments", dispatchAssignmentHandler.Create)
+	dispatch.Get("/assignments/:id", dispatchAssignmentHandler.Get)
+	dispatch.Put("/assignments/:id", dispatchAssignmentHandler.Update)
+	dispatch.Delete("/assignments/:id", dispatchAssignmentHandler.Delete)
 
 	return app
 }

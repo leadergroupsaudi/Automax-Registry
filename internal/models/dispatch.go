@@ -15,6 +15,16 @@ const (
 	ResourceDispatched  = "dispatched"
 	ResourceMaintenance = "maintenance"
 
+	DispatchMaster     = "master"
+	DispatchSupporting = "supporting"
+
+	DispatchOffered   = "offered"
+	DispatchAccepted  = "accepted"
+	DispatchRejected  = "rejected"
+	DispatchExpired   = "expired"
+	DispatchCompleted = "completed"
+	DispatchCancelled = "cancelled"
+
 	AssignmentScheduled = "scheduled"
 	AssignmentActive    = "active"
 	AssignmentCompleted = "completed"
@@ -385,6 +395,7 @@ type Resource struct {
 	PartnerUserID     *uuid.UUID `gorm:"column:partner_user_id;type:uuid" json:"partner_user_id"`
 	Latitude          *float64   `gorm:"-" json:"latitude"`
 	Longitude         *float64   `gorm:"-" json:"longitude"`
+	UniqueID          string     `gorm:"-" json:"unique_id"`
 	CreatedAt         time.Time  `gorm:"column:created_at;not null;autoCreateTime" json:"created_at"`
 	UpdatedAt         time.Time  `gorm:"column:updated_at;not null;autoUpdateTime" json:"updated_at"`
 }
@@ -426,6 +437,7 @@ type ResourceResponse struct {
 	PartnerUserID     *uuid.UUID  `json:"partner_user_id"`
 	Latitude          *float64    `json:"latitude"`
 	Longitude         *float64    `json:"longitude"`
+	UniqueID          string      `json:"unique_id"`
 	CreatedAt         time.Time   `json:"created_at"`
 	UpdatedAt         time.Time   `json:"updated_at"`
 }
@@ -459,6 +471,7 @@ func (r Resource) Response() ResourceResponse {
 		PartnerUserID:     r.PartnerUserID,
 		Latitude:          r.Latitude,
 		Longitude:         r.Longitude,
+		UniqueID:          r.UniqueID,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 	}
@@ -467,6 +480,10 @@ func (r Resource) Response() ResourceResponse {
 type ResourceWriteRequest struct {
 	ThingID           uuid.UUID    `json:"thing_id"`
 	Name              *string      `json:"name"`
+	DepartmentID      uuid.UUID    `json:"department_id"`
+	UniqueID          string       `json:"unique_id"`
+	TrackerType       string       `json:"tracker_type"`
+	ChassisNumber     string       `json:"chassis_number"`
 	ResourceTypeID    uuid.UUID    `json:"resource_type_id"`
 	ServicePointID    *uuid.UUID   `json:"service_point_id"`
 	Status            string       `json:"status"`
@@ -581,6 +598,67 @@ type AssignmentWriteRequest struct {
 	StartAt       *time.Time `json:"start_at"`
 	EndAt         *time.Time `json:"end_at"`
 	Status        string     `json:"status"`
+}
+
+// DispatchAssignment is one unit offered to an incident.
+type DispatchAssignment struct {
+	ID          uuid.UUID  `gorm:"column:id;type:uuid;primaryKey" json:"id"`
+	IncidentID  uuid.UUID  `gorm:"column:incident_id;type:uuid;not null" json:"incident_id"`
+	ResourceID  uuid.UUID  `gorm:"column:resource_id;type:uuid;not null" json:"resource_id"`
+	Role        string     `gorm:"column:role;type:varchar(20);not null;default:master" json:"role"`
+	Status      string     `gorm:"column:status;type:varchar(20);not null;default:offered" json:"status"`
+	OfferedAt   time.Time  `gorm:"column:offered_at;not null" json:"offered_at"`
+	RespondedAt *time.Time `gorm:"column:responded_at" json:"responded_at"`
+	CompletedAt *time.Time `gorm:"column:completed_at" json:"completed_at"`
+}
+
+func (DispatchAssignment) TableName() string { return "dispatch_assignment" }
+
+func (a *DispatchAssignment) BeforeCreate(_ *gorm.DB) error {
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	if a.OfferedAt.IsZero() {
+		a.OfferedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+func (a DispatchAssignment) Response() DispatchAssignmentResponse {
+	return DispatchAssignmentResponse{
+		ID:          a.ID,
+		IncidentID:  a.IncidentID,
+		ResourceID:  a.ResourceID,
+		Role:        a.Role,
+		Status:      a.Status,
+		OfferedAt:   a.OfferedAt,
+		RespondedAt: a.RespondedAt,
+		CompletedAt: a.CompletedAt,
+	}
+}
+
+type DispatchAssignmentResponse struct {
+	ID          uuid.UUID  `json:"id"`
+	IncidentID  uuid.UUID  `json:"incident_id"`
+	ResourceID  uuid.UUID  `json:"resource_id"`
+	Role        string     `json:"role"`
+	Status      string     `json:"status"`
+	OfferedAt   time.Time  `json:"offered_at"`
+	RespondedAt *time.Time `json:"responded_at"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type DispatchAssignmentWriteRequest struct {
+	IncidentID uuid.UUID `json:"incident_id"`
+	ResourceID uuid.UUID `json:"resource_id"`
+	Role       string    `json:"role"`
+	Status     string    `json:"status"`
+}
+
+type DispatchAssignmentFilter struct {
+	IncidentID *uuid.UUID
+	ResourceID *uuid.UUID
+	Status     string
 }
 
 // Occupancy is one scheduled or active assignment, with its shift clock when it has one.
