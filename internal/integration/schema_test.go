@@ -20,7 +20,7 @@ func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 	}
 	wantTables := []string{
 		"channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_ticket_projection",
-		"groups", "resource", "resource_shift_assignment", "resource_type", "service_point", "shift",
+		"groups", "incident_service_resource", "resource", "resource_shift_assignment", "resource_type", "service_point", "shift",
 		"thing_external_refs", "things",
 	}
 	assertThingCoordinateColumns(t)
@@ -66,6 +66,7 @@ func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 		"resource_shift_assignment.resource_id": "resource|RESTRICT",
 		"resource_shift_assignment.shift_id":    "shift|RESTRICT",
 		"dispatch_assignment.resource_id":       "resource|RESTRICT",
+		"incident_service_resource.resource_id": "resource|CASCADE",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("foreign keys = %#v", got)

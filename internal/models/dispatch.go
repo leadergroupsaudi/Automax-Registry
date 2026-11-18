@@ -508,6 +508,51 @@ type ResourceWriteRequest struct {
 	PartnerUserID     *uuid.UUID   `json:"partner_user_id"`
 }
 
+// ResourceDriversRequest asks for the driver user ids of every resource at a service point.
+type ResourceDriversRequest struct {
+	ServiceID  uuid.UUID `json:"service_id"`
+	IncidentID uuid.UUID `json:"incident_id"`
+}
+
+// ResourceDriver is a resource at a service point together with its driver.
+type ResourceDriver struct {
+	ResourceID   uuid.UUID `gorm:"column:id"`
+	DriverUserID uuid.UUID `gorm:"column:driver_user_id"`
+}
+
+// IncidentServiceResource records that a resource was offered for an incident at a service point.
+// ResourceID is nil when the service point had no unit with a driver.
+type IncidentServiceResource struct {
+	ID         uuid.UUID  `gorm:"column:id;type:uuid;primaryKey"`
+	ServiceID  uuid.UUID  `gorm:"column:service_id;type:uuid;not null"`
+	IncidentID uuid.UUID  `gorm:"column:incident_id;type:uuid;not null"`
+	ResourceID *uuid.UUID `gorm:"column:resource_id;type:uuid"`
+	CreatedAt  time.Time  `gorm:"column:created_at;autoCreateTime"`
+}
+
+func (IncidentServiceResource) TableName() string { return "incident_service_resource" }
+
+func (m *IncidentServiceResource) BeforeCreate(_ *gorm.DB) error {
+	if m.ID == uuid.Nil {
+		m.ID = uuid.New()
+	}
+	return nil
+}
+
+// ResourceIncidentsRequest asks for the incidents recorded for a resource at a service point.
+type ResourceIncidentsRequest struct {
+	ResourceID uuid.UUID `json:"resource_id"`
+	ServiceID  uuid.UUID `json:"service_id"`
+}
+
+type ResourceIncidentsResponse struct {
+	IncidentIDs []uuid.UUID `json:"incident_ids"`
+}
+
+type ResourceDriversResponse struct {
+	DriverUserIDs []uuid.UUID `json:"driver_user_ids"`
+}
+
 type ResourceListFilter struct {
 	ResourceTypeID   *uuid.UUID
 	ServicePointID   *uuid.UUID

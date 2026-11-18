@@ -127,6 +127,8 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 
 	dispatch.Get("/resources", resourceHandler.List)
 	dispatch.Post("/resources", resourceHandler.Create)
+	dispatch.Post("/resources/drivers", resourceHandler.Drivers)
+	dispatch.Post("/resources/incidents", resourceHandler.Incidents)
 	if nearestHandler != nil {
 		dispatch.Get("/resources/nearest", nearestHandler.Find)
 	}

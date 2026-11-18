@@ -101,6 +101,57 @@ func (s *ResourceService) UseStateCache(cache ResourceStateCache) {
 	s.state = cache
 }
 
+// DriverUserIDs returns the driver user ids of the resources at the given service point.
+func (s *ResourceService) DriverUserIDs(ctx context.Context, req models.ResourceDriversRequest) (*models.ResourceDriversResponse, error) {
+	fields := map[string]string{}
+	if req.ServiceID == uuid.Nil {
+		fields["service_id"] = "service_id is required"
+	}
+	if req.IncidentID == uuid.Nil {
+		fields["incident_id"] = "incident_id is required"
+	}
+	if len(fields) > 0 {
+		return nil, Invalid("validation failed", fields)
+	}
+	drivers, err := s.resources.DriversByServicePoint(ctx, req.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+	resourceIDs := make([]uuid.UUID, 0, len(drivers))
+	ids := []uuid.UUID{}
+	seen := map[uuid.UUID]bool{}
+	for _, d := range drivers {
+		resourceIDs = append(resourceIDs, d.ResourceID)
+		if !seen[d.DriverUserID] {
+			seen[d.DriverUserID] = true
+			ids = append(ids, d.DriverUserID)
+		}
+	}
+	if err := s.resources.SaveIncidentMapping(ctx, req.ServiceID, req.IncidentID, resourceIDs); err != nil {
+		return nil, err
+	}
+	return &models.ResourceDriversResponse{DriverUserIDs: ids}, nil
+}
+
+// IncidentIDs returns the incident ids recorded for a resource at a service point.
+func (s *ResourceService) IncidentIDs(ctx context.Context, req models.ResourceIncidentsRequest) (*models.ResourceIncidentsResponse, error) {
+	fields := map[string]string{}
+	if req.ResourceID == uuid.Nil {
+		fields["resource_id"] = "resource_id is required"
+	}
+	if req.ServiceID == uuid.Nil {
+		fields["service_id"] = "service_id is required"
+	}
+	if len(fields) > 0 {
+		return nil, Invalid("validation failed", fields)
+	}
+	ids, err := s.resources.IncidentIDsByResourceAndService(ctx, req.ResourceID, req.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+	return &models.ResourceIncidentsResponse{IncidentIDs: ids}, nil
+}
+
 func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRequest) (*models.ResourceResponse, error) {
 	fromCaguar, err := s.registerCaguar(ctx, &req)
 	if err != nil {

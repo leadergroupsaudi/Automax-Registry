@@ -7,6 +7,7 @@ import (
 	"github.com/automax/registry/internal/models"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ResourceRepository interface {
@@ -17,6 +18,9 @@ type ResourceRepository interface {
 	List(ctx context.Context, filter models.ResourceListFilter) ([]models.Resource, int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	SetStatus(ctx context.Context, id uuid.UUID, status string) error
+	DriversByServicePoint(ctx context.Context, servicePointID uuid.UUID) ([]models.ResourceDriver, error)
+	SaveIncidentMapping(ctx context.Context, serviceID, incidentID uuid.UUID, resourceIDs []uuid.UUID) error
+	IncidentIDsByResourceAndService(ctx context.Context, resourceID, serviceID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type resourceRepository struct{ db *gorm.DB }
@@ -302,6 +306,40 @@ func (r *resourceRepository) Exists(ctx context.Context, id uuid.UUID) (bool, er
 	var n int64
 	err := r.db.WithContext(ctx).Model(&models.Resource{}).Where("id = ?", id).Count(&n).Error
 	return n > 0, err
+}
+
+func (r *resourceRepository) DriversByServicePoint(ctx context.Context, servicePointID uuid.UUID) ([]models.ResourceDriver, error) {
+	rows := []models.ResourceDriver{}
+	err := r.db.WithContext(ctx).Table("resource").
+		Select("id, driver_user_id").
+		Where("service_point_id = ? AND driver_user_id IS NOT NULL", servicePointID).
+		Order("created_at, id").
+		Scan(&rows).Error
+	return rows, err
+}
+
+// SaveIncidentMapping stores one row per resource, or a single row with a NULL resource when
+// there are none. Rows that already exist are left alone.
+func (r *resourceRepository) SaveIncidentMapping(ctx context.Context, serviceID, incidentID uuid.UUID, resourceIDs []uuid.UUID) error {
+	rows := make([]models.IncidentServiceResource, 0, len(resourceIDs)+1)
+	for i := range resourceIDs {
+		id := resourceIDs[i]
+		rows = append(rows, models.IncidentServiceResource{ServiceID: serviceID, IncidentID: incidentID, ResourceID: &id})
+	}
+	if len(rows) == 0 {
+		rows = append(rows, models.IncidentServiceResource{ServiceID: serviceID, IncidentID: incidentID})
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+func (r *resourceRepository) IncidentIDsByResourceAndService(ctx context.Context, resourceID, serviceID uuid.UUID) ([]uuid.UUID, error) {
+	ids := []uuid.UUID{}
+	err := r.db.WithContext(ctx).Table("incident_service_resource").
+		Where("resource_id = ? AND service_id = ?", resourceID, serviceID).
+		Group("incident_id").
+		Order("MIN(created_at), incident_id").
+		Pluck("incident_id", &ids).Error
+	return ids, err
 }
 
 func applyThingResource(tx *gorm.DB, thingID, typeID uuid.UUID, pointID *uuid.UUID, status string) error {

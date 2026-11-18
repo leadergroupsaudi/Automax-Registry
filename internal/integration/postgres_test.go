@@ -119,7 +119,7 @@ func resetSchema(conn *gorm.DB) error {
 
 func truncate(t *testing.T) {
 	t.Helper()
-	err := db.Exec(`TRUNCATE TABLE dispatch_assignment, resource_shift_assignment, resource, shift, service_point, resource_type, dispatch_ticket_projection, channel_acl, device_credentials, thing_external_refs, things, channels, groups CASCADE`).Error
+	err := db.Exec(`TRUNCATE TABLE incident_service_resource, dispatch_assignment, resource_shift_assignment, resource, shift, service_point, resource_type, dispatch_ticket_projection, channel_acl, device_credentials, thing_external_refs, things, channels, groups CASCADE`).Error
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -108,6 +108,49 @@ func TestDispatchRoutes(t *testing.T) {
 		t.Fatalf("filtered resources %#v", listed["data"])
 	}
 	requireStatus(t, do(t, app, http.MethodGet, "/dispatch/resources?status=nope", ""), http.StatusBadRequest)
+	driverID := uuid.New().String()
+	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
+	incidentID := uuid.New()
+	driversBody := fmt.Sprintf(`{"service_id":"%s","incident_id":"%s"}`, pointID, incidentID)
+	drivers := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", driversBody), http.StatusOK)
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", driversBody), http.StatusOK)
+	var mapped int64
+	db.Raw(`SELECT COUNT(*) FROM incident_service_resource WHERE service_id = ? AND incident_id = ? AND resource_id = ?`, pointID, incidentID, resourceID).Scan(&mapped)
+	if mapped != 1 {
+		t.Fatalf("mapping rows = %d", mapped)
+	}
+	if ids, _ := dataObject(t, drivers)["driver_user_ids"].([]any); len(ids) != 1 || ids[0] != driverID {
+		t.Fatalf("drivers %#v", drivers)
+	}
+	secondIncident := uuid.New()
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", fmt.Sprintf(`{"service_id":"%s","incident_id":"%s"}`, pointID, secondIncident)), http.StatusOK)
+	incidents := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", fmt.Sprintf(`{"resource_id":"%s","service_id":"%s"}`, resourceID, pointID)), http.StatusOK)
+	if ids, _ := dataObject(t, incidents)["incident_ids"].([]any); len(ids) != 2 || ids[0] != incidentID.String() || ids[1] != secondIncident.String() {
+		t.Fatalf("incidents %#v", incidents)
+	}
+	noIncidents := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", fmt.Sprintf(`{"resource_id":"%s","service_id":"%s"}`, resourceID, uuid.New())), http.StatusOK)
+	if ids, ok := dataObject(t, noIncidents)["incident_ids"].([]any); !ok || len(ids) != 0 {
+		t.Fatalf("no incidents %#v", noIncidents)
+	}
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", `{}`), http.StatusBadRequest)
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", `{`), http.StatusBadRequest)
+	emptyService, emptyIncident := uuid.New(), uuid.New()
+	none := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", fmt.Sprintf(`{"service_id":"%s","incident_id":"%s"}`, emptyService, emptyIncident)), http.StatusOK)
+	var nullRows int64
+	db.Raw(`SELECT COUNT(*) FROM incident_service_resource WHERE service_id = ? AND incident_id = ? AND resource_id IS NULL`, emptyService, emptyIncident).Scan(&nullRows)
+	if nullRows != 1 {
+		t.Fatalf("null mapping rows = %d", nullRows)
+	}
+	if ids, ok := dataObject(t, none)["driver_user_ids"].([]any); !ok || len(ids) != 0 {
+		t.Fatalf("no drivers %#v", none)
+	}
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", `{}`), http.StatusBadRequest)
+	var total int64
+	db.Raw(`SELECT COUNT(*) FROM incident_service_resource`).Scan(&total)
+	if total != 3 {
+		t.Fatalf("mapping rows after rejected calls = %d", total)
+	}
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", `{`), http.StatusBadRequest)
 
 	blockedThing := requireStatus(t, do(t, app, http.MethodDelete, "/registry/things/"+thingID, ""), http.StatusConflict)
 	if blockedThing["error"] != "thing is a resource" {

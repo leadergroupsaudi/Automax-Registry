@@ -1141,6 +1141,74 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /dispatch/resources/drivers:
+    post:
+      tags: [Resources]
+      summary: Driver user ids of the units at a service point
+      description: Returns the distinct driver_user_id of every resource whose service_point_id equals service_id. Also records (service_id, incident_id, resource_id) rows in incident_service_resource, or one row with a null resource_id when there is no unit with a driver.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_id, incident_id]
+              properties:
+                service_id: { type: string, format: uuid }
+                incident_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Driver user ids
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      driver_user_ids:
+                        type: array
+                        items: { type: string, format: uuid }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /dispatch/resources/incidents:
+    post:
+      tags: [Resources]
+      summary: Incident ids recorded for a unit at a service point
+      description: Returns the distinct incident_id values stored in incident_service_resource for the given resource_id and service_id, oldest first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_id, service_id]
+              properties:
+                resource_id: { type: string, format: uuid }
+                service_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Incident ids
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      incident_ids:
+                        type: array
+                        items: { type: string, format: uuid }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /dispatch/resources/nearest:
     get:
       tags: [Resources]

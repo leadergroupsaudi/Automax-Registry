@@ -322,6 +322,30 @@ func (h *ResourceHandler) Create(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusCreated, "resource created", row)
 }
 
+func (h *ResourceHandler) Drivers(c *fiber.Ctx) error {
+	var req models.ResourceDriversRequest
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	out, err := h.svc.DriverUserIDs(c.UserContext(), req)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "drivers retrieved", out)
+}
+
+func (h *ResourceHandler) Incidents(c *fiber.Ctx) error {
+	var req models.ResourceIncidentsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	out, err := h.svc.IncidentIDs(c.UserContext(), req)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "incidents retrieved", out)
+}
+
 func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {
