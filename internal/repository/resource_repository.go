@@ -20,7 +20,7 @@ type ResourceRepository interface {
 	SetStatus(ctx context.Context, id uuid.UUID, status string) error
 	DriversByServicePoint(ctx context.Context, servicePointID uuid.UUID) ([]models.ResourceDriver, error)
 	SaveIncidentMapping(ctx context.Context, serviceID, incidentID uuid.UUID, resourceIDs []uuid.UUID) error
-	IncidentIDsByResourceAndService(ctx context.Context, resourceID, serviceID uuid.UUID) ([]uuid.UUID, error)
+	IncidentIDsByResourceAndService(ctx context.Context, resourceID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type resourceRepository struct{ db *gorm.DB }
@@ -332,10 +332,10 @@ func (r *resourceRepository) SaveIncidentMapping(ctx context.Context, serviceID,
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
-func (r *resourceRepository) IncidentIDsByResourceAndService(ctx context.Context, resourceID, serviceID uuid.UUID) ([]uuid.UUID, error) {
+func (r *resourceRepository) IncidentIDsByResourceAndService(ctx context.Context, resourceID uuid.UUID) ([]uuid.UUID, error) {
 	ids := []uuid.UUID{}
 	err := r.db.WithContext(ctx).Table("incident_service_resource").
-		Where("resource_id = ? AND service_id = ?", resourceID, serviceID).
+		Where("resource_id = ?", resourceID).
 		Group("incident_id").
 		Order("MIN(created_at), incident_id").
 		Pluck("incident_id", &ids).Error

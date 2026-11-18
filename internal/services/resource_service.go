@@ -139,13 +139,13 @@ func (s *ResourceService) IncidentIDs(ctx context.Context, req models.ResourceIn
 	if req.ResourceID == uuid.Nil {
 		fields["resource_id"] = "resource_id is required"
 	}
-	if req.ServiceID == uuid.Nil {
-		fields["service_id"] = "service_id is required"
-	}
+	// if req.ServiceID == uuid.Nil {
+	// 	fields["service_id"] = "service_id is required"
+	// }
 	if len(fields) > 0 {
 		return nil, Invalid("validation failed", fields)
 	}
-	ids, err := s.resources.IncidentIDsByResourceAndService(ctx, req.ResourceID, req.ServiceID)
+	ids, err := s.resources.IncidentIDsByResourceAndService(ctx, req.ResourceID)
 	if err != nil {
 		return nil, err
 	}
