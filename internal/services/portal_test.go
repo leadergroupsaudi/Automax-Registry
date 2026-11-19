@@ -41,8 +41,17 @@ func TestDeviceRegisterValidatesAndSendsToCaguar(t *testing.T) {
 	if got.ThingID != things.id || got.UniqueID != "TESTGO123" || got.PlateNumber != "ABC-1234" || got.Name != "Test Device Go" {
 		t.Fatalf("result %#v", got)
 	}
-	if portal.device.Name != "Test Device Go" || portal.device.UniqueID != "TESTGO123" || portal.device.PlateNumber != "ABC-1234" || portal.device.TrackerType != "Vehicle" || portal.device.Status != "" || portal.device.Category != "car" || portal.device.ChassisNumber != "CHS-0001" {
+	if portal.device.Name != "Test Device Go" || portal.device.UniqueID != "TESTGO123" || portal.device.PlateNumber != "ABC-1234" || portal.device.TrackerType != "Vehicle" || portal.device.Status != "" || portal.device.Category != "car" || portal.device.ChassisNumber != "CHS-0001" || portal.device.Product != caguar.ProductAutomax {
 		t.Fatalf("caguar %#v", portal.device)
+	}
+
+	portal.err = &caguar.RemoteError{Status: 400, Body: `{"error":"chassis number already exists"}`}
+	_, err = svc.Register(context.Background(), DeviceRegistration{
+		Name: "Other", UniqueID: "OTHER1", DepartmentID: dept,
+		TrackerType: "Vehicle", PlateNumber: "ABC-1234", ChassisNumber: "CHS-0001",
+	})
+	if errFields(t, err)["chassis_number"] != "chassis_number is already used in Caguar" {
+		t.Fatalf("chassis %#v", err)
 	}
 
 	portal.err = &caguar.RemoteError{Status: 400, Body: `{"error":"A device with this name already exists","status":"DUPLICATE_DEVICE"}`}
@@ -188,6 +197,11 @@ func (f *fakePortal) UpdateDevice(_ context.Context, currentUniqueID string, dev
 	return f.err
 }
 
+func (f *fakePortal) DeleteDevice(_ context.Context, uniqueID string) error {
+	f.lookup = uniqueID
+	return f.err
+}
+
 func (f *fakePortal) RegisterDriver(_ context.Context, driver caguar.Driver) error {
 	f.driver = driver
 	return f.err
@@ -236,6 +250,8 @@ func (fakeOwners) UpdateExternalID(context.Context, uuid.UUID, string, time.Time
 	return nil
 }
 
+func (fakeOwners) Delete(context.Context, uuid.UUID) error { return nil }
+
 type recordingOwners struct {
 	ref        *models.ThingExternalRef
 	externalID string
@@ -257,6 +273,8 @@ func (f *recordingOwners) UpdateExternalID(_ context.Context, _ uuid.UUID, exter
 	f.externalID = externalID
 	return nil
 }
+
+func (f *recordingOwners) Delete(context.Context, uuid.UUID) error { return nil }
 
 type stubPoints struct {
 	rows  []models.NearestServicePoint

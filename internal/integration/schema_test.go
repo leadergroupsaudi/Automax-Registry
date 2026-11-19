@@ -19,7 +19,7 @@ func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTables := []string{
-		"channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_ticket_projection",
+		"caguar_device_sync", "channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_ticket_projection",
 		"groups", "incident_service_resource", "resource", "resource_shift_assignment", "resource_type", "service_point", "shift",
 		"thing_external_refs", "things",
 	}

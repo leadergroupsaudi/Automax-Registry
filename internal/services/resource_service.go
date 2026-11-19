@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/automax/registry/internal/caguar"
 	"github.com/automax/registry/internal/models"
 	"github.com/automax/registry/internal/repository"
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ type ResourceService struct {
 	points    repository.ServicePointRepository
 	devices   *DevicePortal
 	locate    *CaguarSync
+	outbox    repository.CaguarSyncRepository
 	state     ResourceStateCache
 	pub       Publisher
 }
@@ -80,6 +82,14 @@ func (s *ResourceService) UseCaguarSync(sync *CaguarSync) {
 		return
 	}
 	s.locate = sync
+}
+
+// UseCaguarOutbox keeps device creates, edits, and deletes that Caguar has not confirmed.
+func (s *ResourceService) UseCaguarOutbox(outbox repository.CaguarSyncRepository) {
+	if s == nil {
+		return
+	}
+	s.outbox = outbox
 }
 
 // refreshLocations gives Caguar a short chance to update coordinates.
@@ -153,32 +163,51 @@ func (s *ResourceService) IncidentIDs(ctx context.Context, req models.ResourceIn
 }
 
 func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRequest) (*models.ResourceResponse, error) {
-	fromCaguar, err := s.registerCaguar(ctx, &req)
-	if err != nil {
+	if err := validateTracker(&req); err != nil {
+		log.Printf("registry: unit create rejected before save reason=%v", err)
 		return nil, err
 	}
 	createdThing, err := s.ensureThing(ctx, &req)
 	if err != nil {
+		log.Printf("registry: unit create rejected before save reason=%v", err)
 		return nil, err
 	}
 	row, err := s.prepare(ctx, uuid.Nil, req)
 	if err != nil {
 		s.rollbackThing(ctx, createdThing)
+		log.Printf("registry: unit create rejected thing_id=%s reason=%v", req.ThingID, err)
 		return nil, err
 	}
 	if err := applyResourceDetails(row, nil, req); err != nil {
 		s.rollbackThing(ctx, createdThing)
+		log.Printf("registry: unit create rejected thing_id=%s reason=%v", req.ThingID, err)
 		return nil, err
 	}
 	if err := s.resources.Create(ctx, row); err != nil {
-		if fromCaguar {
-			s.rollbackThing(ctx, req.ThingID)
-		} else {
-			s.rollbackThing(ctx, createdThing)
-		}
+		s.rollbackThing(ctx, createdThing)
+		log.Printf("registry: unit create failed thing_id=%s err=%v", req.ThingID, err)
 		return nil, resourceWriteErr(err, false)
 	}
-	log.Printf("registry: resource created id=%s thing_id=%s resource_type_id=%s status=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status)
+	if err := s.storeDeviceMeta(ctx, row.ThingID, &req); err != nil {
+		log.Printf("registry: unit device details not stored thing_id=%s err=%v", row.ThingID, err)
+	}
+	pending, err := s.pushCreate(ctx, row, &req)
+	if err != nil {
+		if delErr := s.resources.Delete(ctx, row.ID); delErr != nil {
+			log.Printf("registry: unit create rollback failed id=%s err=%v", row.ID, delErr)
+		}
+		s.rollbackThing(ctx, createdThing)
+		log.Printf("registry: unit create rejected by caguar id=%s thing_id=%s unique_id=%s reason=%v", row.ID, row.ThingID, strings.TrimSpace(req.UniqueID), err)
+		return nil, err
+	}
+	if strings.TrimSpace(req.UniqueID) != "" {
+		row.UniqueID = strings.TrimSpace(req.UniqueID)
+	}
+	if pending {
+		log.Printf("registry: unit created locally; caguar sync queued id=%s thing_id=%s unique_id=%s", row.ID, row.ThingID, row.UniqueID)
+	} else {
+		log.Printf("registry: resource created id=%s thing_id=%s resource_type_id=%s status=%s unique_id=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status, row.UniqueID)
+	}
 	s.remember(ctx, row)
 	resp := row.Response()
 	publishEvent(s.pub, models.SubjectResourceCreated, row.ID, resp)
@@ -193,26 +222,55 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.ensureThing(ctx, &req); err != nil {
-		return nil, err
+	previousName := ""
+	if req.ThingID != uuid.Nil && req.Name != nil {
+		if thing, findErr := s.things.FindByID(ctx, req.ThingID); findErr == nil {
+			previousName = thing.Name
+		}
 	}
-	if err := s.updateIdentifier(ctx, current, &req); err != nil {
+	if _, err := s.ensureThing(ctx, &req); err != nil {
+		log.Printf("registry: unit update rejected id=%s reason=%v", id, err)
 		return nil, err
 	}
 	row, err := s.prepare(ctx, id, req)
 	if err != nil {
+		log.Printf("registry: unit update rejected id=%s reason=%v", id, err)
 		return nil, err
 	}
 	if err := applyResourceDetails(row, current, req); err != nil {
+		log.Printf("registry: unit update rejected id=%s reason=%v", id, err)
+		return nil, err
+	}
+	pending, err := s.pushUpdate(ctx, current, row, &req)
+	if err != nil {
+		if previousName != "" && req.ThingID != uuid.Nil {
+			if undoErr := s.renameThing(ctx, req.ThingID, previousName); undoErr != nil {
+				log.Printf("registry: unit name restore failed id=%s thing_id=%s err=%v", id, req.ThingID, undoErr)
+			}
+		}
+		log.Printf("registry: unit update rejected by caguar id=%s thing_id=%s unique_id=%s reason=%v", id, row.ThingID, strings.TrimSpace(req.UniqueID), err)
 		return nil, err
 	}
 	if err := s.resources.Update(ctx, row, current.ThingID); err != nil {
 		if repository.IsNotFound(err) {
 			return nil, NotFound("resource not found")
 		}
+		log.Printf("registry: unit update failed id=%s err=%v", id, err)
 		return nil, resourceWriteErr(err, true)
 	}
-	log.Printf("registry: resource updated id=%s thing_id=%s resource_type_id=%s status=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status)
+	if err := s.storeDeviceMeta(ctx, row.ThingID, &req); err != nil {
+		log.Printf("registry: unit device details not stored thing_id=%s err=%v", row.ThingID, err)
+	}
+	if strings.TrimSpace(req.UniqueID) != "" {
+		row.UniqueID = strings.TrimSpace(req.UniqueID)
+	} else {
+		row.UniqueID = current.UniqueID
+	}
+	if pending {
+		log.Printf("registry: unit updated locally; caguar sync queued id=%s thing_id=%s unique_id=%s", row.ID, row.ThingID, row.UniqueID)
+	} else {
+		log.Printf("registry: resource updated id=%s thing_id=%s resource_type_id=%s status=%s unique_id=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status, row.UniqueID)
+	}
 	s.remember(ctx, row)
 	resp := row.Response()
 	publishEvent(s.pub, models.SubjectResourceUpdated, row.ID, resp)
@@ -220,21 +278,37 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 }
 
 func (s *ResourceService) Delete(ctx context.Context, id uuid.UUID) error {
-	err := s.resources.Delete(ctx, id)
+	current, err := s.resources.FindByID(ctx, id)
+	if repository.IsNotFound(err) {
+		return NotFound("resource not found")
+	}
+	if err != nil {
+		return err
+	}
+	err = s.resources.Delete(ctx, id)
 	if repository.IsNotFound(err) {
 		return NotFound("resource not found")
 	}
 	var inUse *repository.ResourceInUseError
 	if errors.As(err, &inUse) {
+		log.Printf("registry: unit delete rejected id=%s reason=%s", id, resourceDeleteMessage(inUse))
 		return Conflict(resourceDeleteMessage(inUse))
 	}
 	if repository.IsForeignKeyViolation(err) {
+		log.Printf("registry: unit delete rejected id=%s reason=resource is in use", id)
 		return Conflict("Cannot delete this resource: it has shift assignments; it has dispatch assignments")
 	}
 	if err != nil {
+		log.Printf("registry: unit delete failed id=%s err=%v", id, err)
 		return err
 	}
-	log.Printf("registry: resource deleted id=%s", id)
+	if pending, pushErr := s.pushDelete(ctx, current); pushErr != nil {
+		log.Printf("registry: unit deleted locally; caguar delete failed id=%s thing_id=%s unique_id=%s err=%v", id, current.ThingID, current.UniqueID, pushErr)
+	} else if pending {
+		log.Printf("registry: unit deleted locally; caguar delete queued id=%s thing_id=%s unique_id=%s", id, current.ThingID, current.UniqueID)
+	} else {
+		log.Printf("registry: resource deleted id=%s thing_id=%s unique_id=%s", id, current.ThingID, current.UniqueID)
+	}
 	s.forget(ctx, id)
 	publishEvent(s.pub, models.SubjectResourceDeleted, id, nil)
 	return nil
@@ -415,6 +489,286 @@ func (s *ResourceService) updateIdentifier(ctx context.Context, current *models.
 	current.UniqueID = next
 	log.Printf("registry: unit identifier updated thing_id=%s unique_id=%s", current.ThingID, next)
 	return nil
+}
+
+func validateTracker(req *models.ResourceWriteRequest) error {
+	if req == nil || strings.TrimSpace(req.UniqueID) == "" {
+		return nil
+	}
+	fields := map[string]string{}
+	if req.Name == nil || strings.TrimSpace(*req.Name) == "" {
+		fields["name"] = "name is required"
+	}
+	if len(strings.TrimSpace(req.UniqueID)) > 255 {
+		fields["unique_id"] = "unique_id must be at most 255 characters"
+	}
+	plate := ""
+	if req.PlateNumber != nil {
+		plate = strings.ToUpper(strings.TrimSpace(*req.PlateNumber))
+	}
+	if !platePattern.MatchString(plate) {
+		fields["plate_number"] = "plate_number must match ABC-1234"
+	}
+	chassis := strings.TrimSpace(req.ChassisNumber)
+	if chassis == "" {
+		fields["chassis_number"] = "chassis_number is required"
+	} else if len(chassis) > 64 {
+		fields["chassis_number"] = "chassis_number must be at most 64 characters"
+	}
+	if len(fields) > 0 {
+		return Invalid("validation failed", fields)
+	}
+	return nil
+}
+
+func caguarDeferred(err error) bool {
+	var se *Error
+	return errors.As(err, &se) && (se.Kind == KindUnavailable || se.Kind == KindUpstream)
+}
+
+// caguarRestricted means Caguar will not change a device it marked as created by Automax.
+func caguarDeviceUnchanged(current *models.Resource, reg DeviceRegistration) bool {
+	if current == nil {
+		return false
+	}
+	same := func(a, b string) bool {
+		return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+	}
+	if !same(current.Name, reg.Name) || !same(current.PlateNumber, reg.PlateNumber) || !same(current.UniqueID, reg.UniqueID) {
+		return false
+	}
+	if strings.TrimSpace(current.ChassisNumber) != "" && !same(current.ChassisNumber, reg.ChassisNumber) {
+		return false
+	}
+	if strings.TrimSpace(current.TrackerType) != "" && !same(current.TrackerType, reg.TrackerType) {
+		return false
+	}
+	return true
+}
+
+func caguarRestricted(err error) bool {
+	text := ""
+	var se *Error
+	if errors.As(err, &se) {
+		text = se.Message
+	}
+	var remote *caguar.RemoteError
+	if errors.As(err, &remote) {
+		text += " " + remote.Body
+	}
+	text = strings.ToLower(text)
+	return strings.Contains(text, "restricted_product") || strings.Contains(text, "automax device")
+}
+
+func (s *ResourceService) registration(ctx context.Context, thingID uuid.UUID, req *models.ResourceWriteRequest) DeviceRegistration {
+	name := ""
+	if req != nil && req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	plate := ""
+	if req != nil && req.PlateNumber != nil {
+		plate = *req.PlateNumber
+	}
+	dept := uuid.Nil
+	if req != nil {
+		dept = req.DepartmentID
+	}
+	tracker := ""
+	chassis := ""
+	unique := ""
+	if req != nil {
+		tracker = strings.TrimSpace(req.TrackerType)
+		chassis = strings.TrimSpace(req.ChassisNumber)
+		unique = strings.TrimSpace(req.UniqueID)
+	}
+	if thing, err := s.things.FindByID(ctx, thingID); err == nil {
+		if dept == uuid.Nil {
+			dept = thing.DepartmentID
+		}
+		if name == "" {
+			name = thing.Name
+		}
+		meta := map[string]string{}
+		if len(thing.Metadata) > 0 {
+			_ = json.Unmarshal(thing.Metadata, &meta)
+		}
+		if chassis == "" {
+			chassis = strings.TrimSpace(meta["chassis_number"])
+		}
+		if tracker == "" {
+			tracker = strings.TrimSpace(meta["tracker_type"])
+		}
+	}
+	if tracker == "" {
+		tracker = "Vehicle"
+	}
+	return DeviceRegistration{
+		Name:          name,
+		UniqueID:      unique,
+		DepartmentID:  dept,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: chassis,
+	}
+}
+
+func (s *ResourceService) storeDeviceMeta(ctx context.Context, thingID uuid.UUID, req *models.ResourceWriteRequest) error {
+	if s == nil || thingID == uuid.Nil || req == nil || strings.TrimSpace(req.UniqueID) == "" {
+		return nil
+	}
+	thing, err := s.things.FindByID(ctx, thingID)
+	if err != nil {
+		return err
+	}
+	meta := map[string]string{}
+	if len(thing.Metadata) > 0 {
+		_ = json.Unmarshal(thing.Metadata, &meta)
+	}
+	meta["unique_id"] = strings.TrimSpace(req.UniqueID)
+	tracker := strings.TrimSpace(req.TrackerType)
+	if tracker == "" {
+		tracker = "Vehicle"
+	}
+	meta["tracker_type"] = tracker
+	if req.PlateNumber != nil {
+		meta["plate_number"] = strings.ToUpper(strings.TrimSpace(*req.PlateNumber))
+	}
+	meta["chassis_number"] = strings.TrimSpace(req.ChassisNumber)
+	meta["product"] = caguar.ProductAutomax
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	thing.Metadata = models.JSON(raw)
+	return s.things.Update(ctx, thing)
+}
+
+func (s *ResourceService) enqueueDevice(ctx context.Context, action string, thingID uuid.UUID, reg DeviceRegistration) {
+	if s == nil || s.outbox == nil || thingID == uuid.Nil {
+		log.Printf("registry: caguar sync not queued action=%s thing_id=%s unique_id=%s", action, thingID, reg.UniqueID)
+		return
+	}
+	raw, err := json.Marshal(reg)
+	if err != nil {
+		log.Printf("registry: caguar sync payload failed action=%s thing_id=%s err=%v", action, thingID, err)
+		return
+	}
+	if err := s.outbox.Enqueue(ctx, &models.CaguarSyncJob{
+		ThingID:  thingID,
+		Action:   action,
+		UniqueID: reg.UniqueID,
+		Payload:  models.JSON(raw),
+	}); err != nil {
+		log.Printf("registry: caguar sync queue failed action=%s thing_id=%s unique_id=%s err=%v", action, thingID, reg.UniqueID, err)
+	}
+}
+
+func (s *ResourceService) pushCreate(ctx context.Context, row *models.Resource, req *models.ResourceWriteRequest) (bool, error) {
+	if s == nil || s.devices == nil || !s.devices.Enabled() || req == nil || strings.TrimSpace(req.UniqueID) == "" {
+		return false, nil
+	}
+	reg := s.registration(ctx, row.ThingID, req)
+	if _, err := s.devices.Attach(ctx, row.ThingID, reg); err != nil {
+		if caguarDeferred(err) {
+			s.enqueueDevice(ctx, models.CaguarSyncCreate, row.ThingID, reg)
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+func (s *ResourceService) pushUpdate(ctx context.Context, current, row *models.Resource, req *models.ResourceWriteRequest) (bool, error) {
+	if s == nil || s.devices == nil || !s.devices.Enabled() || current == nil || row == nil {
+		return false, nil
+	}
+	reg := s.registration(ctx, row.ThingID, req)
+	if reg.UniqueID == "" {
+		reg.UniqueID = strings.TrimSpace(current.UniqueID)
+	}
+	if reg.Name == "" {
+		reg.Name = row.Name
+	}
+	if strings.TrimSpace(reg.PlateNumber) == "" {
+		reg.PlateNumber = row.PlateNumber
+	}
+	if reg.UniqueID == "" {
+		return false, nil
+	}
+	var err error
+	if strings.TrimSpace(current.UniqueID) == "" {
+		_, err = s.devices.Attach(ctx, row.ThingID, reg)
+	} else {
+		_, err = s.devices.Update(ctx, row.ThingID, reg)
+		var se *Error
+		if errors.As(err, &se) && se.Kind == KindNotFound {
+			_, err = s.devices.Attach(ctx, row.ThingID, reg)
+		}
+	}
+	if err == nil {
+		return false, nil
+	}
+	if caguarRestricted(err) && caguarDeviceUnchanged(current, reg) {
+		log.Printf("registry: caguar left the automax device unchanged; other unit fields saved thing_id=%s unique_id=%s", row.ThingID, reg.UniqueID)
+		return false, nil
+	}
+	if caguarDeferred(err) {
+		action := models.CaguarSyncUpdate
+		if strings.TrimSpace(current.UniqueID) == "" {
+			action = models.CaguarSyncCreate
+		}
+		s.enqueueDevice(ctx, action, row.ThingID, reg)
+		return true, nil
+	}
+	return false, err
+}
+
+func (s *ResourceService) pushDelete(ctx context.Context, current *models.Resource) (bool, error) {
+	if s == nil || current == nil {
+		return false, nil
+	}
+	pendingCreate := s.dropPendingEdits(ctx, current.ThingID)
+	if s.devices == nil || !s.devices.Enabled() {
+		return false, nil
+	}
+	if pendingCreate {
+		log.Printf("registry: unit deleted before caguar create thing_id=%s unique_id=%s", current.ThingID, current.UniqueID)
+		return false, nil
+	}
+	if err := s.devices.Remove(ctx, current.ThingID); err != nil {
+		if caguarRestricted(err) {
+			log.Printf("registry: caguar kept the automax device thing_id=%s unique_id=%s", current.ThingID, current.UniqueID)
+			return false, nil
+		}
+		reg := DeviceRegistration{Name: current.Name, UniqueID: current.UniqueID, PlateNumber: current.PlateNumber, TrackerType: "Vehicle"}
+		s.enqueueDevice(ctx, models.CaguarSyncDelete, current.ThingID, reg)
+		return true, nil
+	}
+	return false, nil
+}
+
+func (s *ResourceService) dropPendingEdits(ctx context.Context, thingID uuid.UUID) bool {
+	if s == nil || s.outbox == nil || thingID == uuid.Nil {
+		return false
+	}
+	jobs, err := s.outbox.List(ctx)
+	if err != nil {
+		log.Printf("registry: caguar sync list failed thing_id=%s err=%v", thingID, err)
+		return false
+	}
+	pendingCreate := false
+	for _, job := range jobs {
+		if job.ThingID != thingID || job.Action == models.CaguarSyncDelete {
+			continue
+		}
+		if job.Action == models.CaguarSyncCreate {
+			pendingCreate = true
+		}
+		if err := s.outbox.Delete(ctx, job.ID); err != nil {
+			log.Printf("registry: caguar sync cancel failed id=%s err=%v", job.ID, err)
+		}
+	}
+	return pendingCreate
 }
 
 // registerCaguar sends a new unit to Caguar and keeps the returned thing id.

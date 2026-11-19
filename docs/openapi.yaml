@@ -2590,6 +2590,12 @@ components:
         unique_id:
           type: string
           description: Tracker identifier linked to this unit. Empty when the unit has no Caguar device.
+        chassis_number:
+          type: string
+          description: Chassis number stored for the Caguar device. Empty when the unit has no device details.
+        tracker_type:
+          type: string
+          description: Tracker type stored for the Caguar device. Empty when the unit has no device details.
         created_at:
           type: string
           format: date-time

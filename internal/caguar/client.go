@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,12 @@ type Device struct {
 	ZoneIDs       []int          `json:"zoneIds"`
 	CalendarID    int            `json:"calendarId"`
 	Attributes    map[string]any `json:"attributes"`
+	// Product tells Caguar this device was created by Automax, so the portal does not edit or delete it.
+	Product string `json:"product,omitempty"`
 }
+
+// ProductAutomax is the product value sent on every device create and update.
+const ProductAutomax = "automax"
 
 // Driver is the body Caguar stores for POST /api/drivers.
 type Driver struct {
@@ -110,6 +116,7 @@ func (c *Client) RegisterDevice(ctx context.Context, device Device) error {
 	if device.Attributes == nil {
 		device.Attributes = map[string]any{}
 	}
+	device.Product = ProductAutomax
 	return c.post(ctx, "/api/devices", device)
 }
 
@@ -122,6 +129,9 @@ func (c *Client) UpdateDevice(ctx context.Context, currentUniqueID string, devic
 		currentUniqueID = device.UniqueID
 	}
 	found, err := c.findDevice(ctx, currentUniqueID)
+	if err != nil && restrictedProduct(err) {
+		found, err = c.findListedDevice(ctx, currentUniqueID)
+	}
 	if err != nil {
 		return err
 	}
@@ -147,7 +157,45 @@ func (c *Client) UpdateDevice(ctx context.Context, currentUniqueID string, devic
 	if found.Attributes == nil {
 		found.Attributes = map[string]any{}
 	}
+	// Leave product off the update. Caguar rejects a change that sends product=automax,
+	// and the value stored at create time stays on the device.
+	found.Product = ""
 	_, err = c.send(ctx, http.MethodPut, "/api/devices/"+strconv.Itoa(found.ID), found)
+	return err
+}
+
+func (c *Client) findListedDevice(ctx context.Context, uniqueID string) (Device, error) {
+	devices, err := c.Devices(ctx)
+	if err != nil {
+		return Device{}, err
+	}
+	found, ok, err := pickDevice(devices, uniqueID)
+	if err != nil {
+		return Device{}, err
+	}
+	if !ok {
+		return Device{}, &RemoteError{Status: http.StatusNotFound, Body: "device not found"}
+	}
+	return found, nil
+}
+
+func restrictedProduct(err error) bool {
+	var remote *RemoteError
+	if !errors.As(err, &remote) {
+		return false
+	}
+	body := strings.ToLower(remote.Body)
+	return strings.Contains(body, "restricted_product") || strings.Contains(body, "automax device")
+}
+
+// DeleteDevice removes the portal device with this tracker id.
+// A missing device is a 404 from findDevice.
+func (c *Client) DeleteDevice(ctx context.Context, uniqueID string) error {
+	found, err := c.findDevice(ctx, strings.TrimSpace(uniqueID))
+	if err != nil {
+		return err
+	}
+	_, err = c.send(ctx, http.MethodDelete, "/api/devices/"+strconv.Itoa(found.ID), nil)
 	return err
 }
 

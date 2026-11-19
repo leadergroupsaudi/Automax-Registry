@@ -22,6 +22,8 @@ type ResourceRepository interface {
 	SetIncident(ctx context.Context, id uuid.UUID, incidentID *uuid.UUID) error
 	SaveIncidentMapping(ctx context.Context, serviceID, incidentID uuid.UUID, resourceIDs []uuid.UUID) error
 	IncidentIDsByResourceAndService(ctx context.Context, resourceID uuid.UUID) ([]uuid.UUID, error)
+	FindByThingID(ctx context.Context, thingID uuid.UUID) (*models.Resource, error)
+	UpdatePlate(ctx context.Context, id uuid.UUID, plate string) error
 }
 
 type resourceRepository struct{ db *gorm.DB }
@@ -37,7 +39,9 @@ const resourceSelect = `
 	       r.description, r.radio_id, r.is_active, r.active_till_date, r.call_code,
 	       r.unit_code, r.location_id, r.classification_ids, r.gprs, r.sms, r.sms_vip, r.sim,
 	       r.driver_user_id, r.shift_id, r.partner_user_id, r.incident_id,
-	       COALESCE(er.external_id, '') AS unique_id,
+	       COALESCE(NULLIF(er.external_id, ''), t.metadata->>'unique_id', '') AS unique_id,
+	       COALESCE(t.metadata->>'chassis_number', '') AS chassis_number,
+	       COALESCE(t.metadata->>'tracker_type', '') AS tracker_type,
 	       r.created_at, r.updated_at
 	FROM resource r
 	JOIN things t ON t.id = r.thing_id
@@ -133,6 +137,28 @@ func (r *resourceRepository) reload(ctx context.Context, row *models.Resource) e
 		return err
 	}
 	*row = *stored
+	return nil
+}
+
+func (r *resourceRepository) FindByThingID(ctx context.Context, thingID uuid.UUID) (*models.Resource, error) {
+	rows, err := r.query(ctx, resourceSelect+` WHERE r.thing_id = ?`, thingID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &rows[0], nil
+}
+
+func (r *resourceRepository) UpdatePlate(ctx context.Context, id uuid.UUID, plate string) error {
+	res := r.db.WithContext(ctx).Model(&models.Resource{}).Where("id = ?", id).Update("plate_number", plate)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
 	return nil
 }
 
@@ -239,6 +265,8 @@ type resourceScan struct {
 	Latitude          *float64
 	Longitude         *float64
 	UniqueID          string `gorm:"column:unique_id"`
+	ChassisNumber     string `gorm:"column:chassis_number"`
+	TrackerType       string `gorm:"column:tracker_type"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -280,6 +308,8 @@ func (r *resourceRepository) query(ctx context.Context, sql string, args ...any)
 			Latitude:          row.Latitude,
 			Longitude:         row.Longitude,
 			UniqueID:          row.UniqueID,
+			ChassisNumber:     row.ChassisNumber,
+			TrackerType:       row.TrackerType,
 			CreatedAt:         row.CreatedAt,
 			UpdatedAt:         row.UpdatedAt,
 		})

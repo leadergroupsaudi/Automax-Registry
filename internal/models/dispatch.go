@@ -397,6 +397,8 @@ type Resource struct {
 	Latitude          *float64   `gorm:"-" json:"latitude"`
 	Longitude         *float64   `gorm:"-" json:"longitude"`
 	UniqueID          string     `gorm:"-" json:"unique_id"`
+	ChassisNumber     string     `gorm:"-" json:"chassis_number"`
+	TrackerType       string     `gorm:"-" json:"tracker_type"`
 	CreatedAt         time.Time  `gorm:"column:created_at;not null;autoCreateTime" json:"created_at"`
 	UpdatedAt         time.Time  `gorm:"column:updated_at;not null;autoUpdateTime" json:"updated_at"`
 }
@@ -440,6 +442,8 @@ type ResourceResponse struct {
 	Latitude          *float64    `json:"latitude"`
 	Longitude         *float64    `json:"longitude"`
 	UniqueID          string      `json:"unique_id"`
+	ChassisNumber     string      `json:"chassis_number"`
+	TrackerType       string      `json:"tracker_type"`
 	CreatedAt         time.Time   `json:"created_at"`
 	UpdatedAt         time.Time   `json:"updated_at"`
 }
@@ -475,6 +479,8 @@ func (r Resource) Response() ResourceResponse {
 		Latitude:          r.Latitude,
 		Longitude:         r.Longitude,
 		UniqueID:          r.UniqueID,
+		ChassisNumber:     r.ChassisNumber,
+		TrackerType:       r.TrackerType,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 	}

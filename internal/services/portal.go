@@ -22,6 +22,7 @@ var platePattern = regexp.MustCompile(`^[A-Z]{3}-[0-9]{4}$`)
 type Portal interface {
 	RegisterDevice(ctx context.Context, device caguar.Device) error
 	UpdateDevice(ctx context.Context, currentUniqueID string, device caguar.Device) error
+	DeleteDevice(ctx context.Context, uniqueID string) error
 	RegisterDriver(ctx context.Context, driver caguar.Driver) error
 }
 
@@ -43,6 +44,7 @@ type DevicePortal struct {
 		CountOtherOwners(ctx context.Context, system, externalID string, thingID uuid.UUID) (int64, error)
 		FindByThingSystem(ctx context.Context, thingID uuid.UUID, system string) (*models.ThingExternalRef, error)
 		UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error
+		Delete(ctx context.Context, id uuid.UUID) error
 	}
 	portal Portal
 }
@@ -51,6 +53,7 @@ func NewDevicePortal(things thingCreator, refs refLinker, owners interface {
 	CountOtherOwners(ctx context.Context, system, externalID string, thingID uuid.UUID) (int64, error)
 	FindByThingSystem(ctx context.Context, thingID uuid.UUID, system string) (*models.ThingExternalRef, error)
 	UpdateExternalID(ctx context.Context, id uuid.UUID, externalID string, syncedAt time.Time) error
+	Delete(ctx context.Context, id uuid.UUID) error
 }, portal Portal) *DevicePortal {
 	return &DevicePortal{things: things, refs: refs, owners: owners, portal: portal}
 }
@@ -121,6 +124,7 @@ func (s *DevicePortal) Register(ctx context.Context, req DeviceRegistration) (*D
 		Contact:       strings.TrimSpace(req.Contact),
 		ZoneIDs:       []int{},
 		Attributes:    map[string]any{},
+		Product:       caguar.ProductAutomax,
 	}); err != nil {
 		return nil, portalErr("device", uniqueID, err)
 	}
@@ -200,6 +204,7 @@ func (s *DevicePortal) Update(ctx context.Context, thingID uuid.UUID, req Device
 		Phone:         strings.TrimSpace(req.Phone),
 		Model:         strings.TrimSpace(req.Model),
 		Contact:       strings.TrimSpace(req.Contact),
+		Product:       caguar.ProductAutomax,
 	}); err != nil {
 		var remote *caguar.RemoteError
 		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
@@ -276,6 +281,7 @@ func (s *DevicePortal) Attach(ctx context.Context, thingID uuid.UUID, req Device
 		Contact:       strings.TrimSpace(req.Contact),
 		ZoneIDs:       []int{},
 		Attributes:    map[string]any{},
+		Product:       caguar.ProductAutomax,
 	}); err != nil {
 		return nil, portalErr("device", uniqueID, err)
 	}
@@ -308,6 +314,34 @@ func (s *DevicePortal) Attach(ctx context.Context, thingID uuid.UUID, req Device
 	}
 	log.Printf("registry: caguar device attached thing_id=%s unique_id=%s name=%s", thingID, uniqueID, name)
 	return deviceResult(thingID, name, uniqueID, req.DepartmentID, tracker, plate, chassis), nil
+}
+
+// Remove deletes the linked Caguar device. A device Caguar has already dropped is treated as gone.
+func (s *DevicePortal) Remove(ctx context.Context, thingID uuid.UUID) error {
+	if s == nil || s.portal == nil || thingID == uuid.Nil {
+		return nil
+	}
+	ref, err := s.owners.FindByThingSystem(ctx, thingID, models.ExternalSystemTraccar)
+	if repository.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.portal.DeleteDevice(ctx, ref.ExternalID); err != nil {
+		var remote *caguar.RemoteError
+		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
+			log.Printf("registry: caguar device already gone thing_id=%s unique_id=%s", thingID, ref.ExternalID)
+		} else {
+			return portalErr("device", ref.ExternalID, err)
+		}
+	} else {
+		log.Printf("registry: caguar device deleted thing_id=%s unique_id=%s", thingID, ref.ExternalID)
+	}
+	if err := s.owners.Delete(ctx, ref.ID); err != nil && !repository.IsNotFound(err) {
+		log.Printf("registry: caguar device deleted but external ref remained thing_id=%s ref_id=%s err=%v", thingID, ref.ID, err)
+	}
+	return nil
 }
 
 func deviceResult(thingID uuid.UUID, name, uniqueID string, departmentID uuid.UUID, tracker, plate, chassis string) *DeviceResult {
@@ -434,6 +468,9 @@ func portalErr(kind, uniqueID string, err error) error {
 		if remote.Status >= 500 {
 			return Upstream(msg)
 		}
+		if fields := caguarDuplicateFields(remote.Body, msg); len(fields) > 0 {
+			return Invalid("validation failed", fields)
+		}
 		if caguarDuplicate(remote.Body, msg) {
 			return Conflict(msg)
 		}
@@ -464,6 +501,21 @@ func caguarMessage(body string) string {
 		return ""
 	}
 	return body
+}
+
+func caguarDuplicateFields(body, msg string) map[string]string {
+	text := strings.ToLower(body + " " + msg)
+	fields := map[string]string{}
+	if strings.Contains(text, "chassis") {
+		fields["chassis_number"] = "chassis_number is already used in Caguar"
+	}
+	if strings.Contains(text, "plate") {
+		fields["plate_number"] = "plate_number is already used in Caguar"
+	}
+	if strings.Contains(text, "unique") || strings.Contains(text, "identifier") {
+		fields["unique_id"] = "unique_id is already used in Caguar"
+	}
+	return fields
 }
 
 func caguarDuplicate(body, msg string) bool {

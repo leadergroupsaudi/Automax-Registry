@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/automax/registry/internal/caguar"
 	"github.com/automax/registry/internal/repository"
@@ -65,8 +67,21 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	resourceSvc := services.NewResourceService(resources, things, resourceTypes, servicePoints)
 	resourceSvc.UsePublisher(pub)
 	resourceSvc.UseDevicePortal(devicePortal)
+	outbox := repository.NewCaguarSyncRepository(db)
+	resourceSvc.UseCaguarOutbox(outbox)
 	if portal != nil {
-		resourceSvc.UseCaguarSync(services.NewCaguarSync(portal, refs, things))
+		sync := services.NewCaguarSync(portal, refs, things)
+		sync.UseResources(resources)
+		sync.UseOutbox(outbox)
+		sync.UseWriter(portal)
+		resourceSvc.UseCaguarSync(sync)
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				sync.Refresh(context.Background())
+			}
+		}()
 	}
 	assignmentSvc := services.NewAssignmentService(assignments, resources, shifts)
 	dispatchAssignments := repository.NewDispatchAssignmentRepository(db)
