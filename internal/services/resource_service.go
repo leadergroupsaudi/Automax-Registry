@@ -360,6 +360,23 @@ func (s *ResourceService) Get(ctx context.Context, id uuid.UUID) (*models.Resour
 	return &resp, nil
 }
 
+func (s *ResourceService) GetByUniqueID(ctx context.Context, uniqueID string) (*models.ResourceResponse, error) {
+	uniqueID = strings.TrimSpace(uniqueID)
+	if uniqueID == "" {
+		return nil, Invalid("validation failed", map[string]string{"unique_id": "unique_id is required"})
+	}
+	s.refreshLocations(ctx)
+	row, err := s.resources.FindByUniqueID(ctx, uniqueID)
+	if repository.IsNotFound(err) {
+		return nil, NotFound("resource not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	resp := row.Response()
+	return &resp, nil
+}
+
 func (s *ResourceService) List(ctx context.Context, filter models.ResourceListFilter) ([]models.ResourceResponse, int64, error) {
 	s.refreshLocations(ctx)
 	if filter.Status != "" {

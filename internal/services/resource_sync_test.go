@@ -309,6 +309,15 @@ func (m *memResources) FindByID(_ context.Context, id uuid.UUID) (*models.Resour
 	copy := *row
 	return &copy, nil
 }
+func (m *memResources) FindByUniqueID(_ context.Context, uniqueID string) (*models.Resource, error) {
+	for _, row := range m.rows {
+		if row.UniqueID == uniqueID {
+			copy := *row
+			return &copy, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
 func (m *memResources) List(context.Context, models.ResourceListFilter) ([]models.Resource, int64, error) {
 	return nil, 0, nil
 }

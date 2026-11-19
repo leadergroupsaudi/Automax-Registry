@@ -15,6 +15,7 @@ type ResourceRepository interface {
 	Update(ctx context.Context, row *models.Resource, previousThing uuid.UUID) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.Resource, error)
+	FindByUniqueID(ctx context.Context, uniqueID string) (*models.Resource, error)
 	List(ctx context.Context, filter models.ResourceListFilter) ([]models.Resource, int64, error)
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	SetStatus(ctx context.Context, id uuid.UUID, status string) error
@@ -164,6 +165,17 @@ func (r *resourceRepository) UpdatePlate(ctx context.Context, id uuid.UUID, plat
 
 func (r *resourceRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Resource, error) {
 	rows, err := r.query(ctx, resourceSelect+` WHERE r.id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &rows[0], nil
+}
+
+func (r *resourceRepository) FindByUniqueID(ctx context.Context, uniqueID string) (*models.Resource, error) {
+	rows, err := r.query(ctx, resourceSelect+` WHERE COALESCE(NULLIF(er.external_id, ''), t.metadata->>'unique_id', '') = ? LIMIT 1`, uniqueID)
 	if err != nil {
 		return nil, err
 	}

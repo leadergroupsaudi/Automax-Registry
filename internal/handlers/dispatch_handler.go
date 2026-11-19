@@ -392,6 +392,14 @@ func (h *ResourceHandler) Delete(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "resource deleted", nil)
 }
 
+func (h *ResourceHandler) GetByUniqueID(c *fiber.Ctx) error {
+	row, err := h.svc.GetByUniqueID(c.UserContext(), c.Params("unique_id"))
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "resource retrieved", row)
+}
+
 func (h *ResourceHandler) Get(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {

@@ -147,6 +147,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	if nearestHandler != nil {
 		dispatch.Get("/resources/nearest", nearestHandler.Find)
 	}
+	dispatch.Get("/resources/unique/:unique_id", resourceHandler.GetByUniqueID)
 	dispatch.Get("/resources/:id", resourceHandler.Get)
 	dispatch.Put("/resources/:id", resourceHandler.Update)
 	dispatch.Patch("/resources/:id/incident", resourceHandler.SetIncident)
