@@ -94,6 +94,8 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	resourceHandler := NewResourceHandler(resourceSvc)
 	assignmentHandler := NewAssignmentHandler(assignmentSvc)
 	dispatchAssignmentHandler := NewDispatchAssignmentHandler(dispatchAssignmentSvc)
+	fireStationAlerts := repository.NewFireStationAlertRepository(db)
+	fireStationAlertHandler := NewFireStationAlertHandler(services.NewFireStationAlertService(servicePoints, fireStationAlerts))
 	var nearestHandler *NearestHandler
 	if nearest != nil {
 		nearestHandler = NewNearestHandler(nearest)
@@ -152,6 +154,10 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	dispatch.Put("/resources/:id", resourceHandler.Update)
 	dispatch.Patch("/resources/:id/incident", resourceHandler.SetIncident)
 	dispatch.Delete("/resources/:id", resourceHandler.Delete)
+
+	dispatch.Post("/fire-station-alerts", fireStationAlertHandler.AlertSelection)
+	dispatch.Post("/incidents/:incident_id/fire-station-alerts", fireStationAlertHandler.Alert)
+	dispatch.Get("/incidents/:incident_id/fire-station-alerts", fireStationAlertHandler.List)
 
 	dispatch.Get("/service-points", servicePointHandler.List)
 	dispatch.Post("/service-points", servicePointHandler.Create)

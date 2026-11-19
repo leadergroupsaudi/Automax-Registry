@@ -35,6 +35,9 @@ var migration0008 string
 //go:embed sql/0009_caguar_device_sync.sql
 var migration0009 string
 
+//go:embed sql/0010_fire_station_alert.sql
+var migration0010 string
+
 func Migrate(db *gorm.DB) error {
 	if err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -57,6 +60,7 @@ func Migrate(db *gorm.DB) error {
 		{"0007_incident_service_resource", migration0007},
 		{"0008_resource_incident", migration0008},
 		{"0009_caguar_device_sync", migration0009},
+		{"0010_fire_station_alert", migration0010},
 	}
 	for _, m := range migrations {
 		var applied int64

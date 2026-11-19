@@ -1350,6 +1350,45 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /dispatch/incidents/{incident_id}/fire-station-alerts:
+    post:
+      tags: [Fire station alerts]
+      summary: Alert every active fire station in a department, or only the selected stations
+      operationId: alertFireStations
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [department_id]
+              properties:
+                department_id: {type: string, format: uuid}
+                all: {type: boolean, description: When true, every active fire station in the department is alerted.}
+                service_point_ids:
+                  type: array
+                  items: {type: string, format: uuid}
+                  description: Stations to alert when all is false.
+      responses:
+        "200":
+          description: Fire stations alerted
+    get:
+      tags: [Fire station alerts]
+      summary: List fire stations already alerted for an incident
+      operationId: listFireStationAlerts
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Fire station alerts retrieved
   /dispatch/service-points:
     get:
       tags: [Service points]

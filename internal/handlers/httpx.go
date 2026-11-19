@@ -168,6 +168,8 @@ func idLabel(path, param string) string {
 		return "credential id"
 	case "aclId":
 		return "acl id"
+	case "incident_id":
+		return "incident id"
 	}
 	switch {
 	case strings.Contains(path, "/dispatch/assignments/"):
