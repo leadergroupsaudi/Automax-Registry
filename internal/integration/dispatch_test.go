@@ -128,12 +128,32 @@ func TestDispatchRoutes(t *testing.T) {
 	if ids, _ := dataObject(t, incidents)["incident_ids"].([]any); len(ids) != 2 || ids[0] != incidentID.String() || ids[1] != secondIncident.String() {
 		t.Fatalf("incidents %#v", incidents)
 	}
-	noIncidents := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", fmt.Sprintf(`{"resource_id":"%s","service_id":"%s"}`, resourceID, uuid.New())), http.StatusOK)
+	noIncidents := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", fmt.Sprintf(`{"resource_id":"%s","service_id":"%s"}`, uuid.New(), pointID)), http.StatusOK)
 	if ids, ok := dataObject(t, noIncidents)["incident_ids"].([]any); !ok || len(ids) != 0 {
 		t.Fatalf("no incidents %#v", noIncidents)
 	}
 	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", `{}`), http.StatusBadRequest)
 	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/incidents", `{`), http.StatusBadRequest)
+	patched := requireStatus(t, do(t, app, http.MethodPatch, "/dispatch/resources/"+resourceID+"/incident", fmt.Sprintf(`{"incident_id":"%s"}`, incidentID)), http.StatusOK)
+	if dataObject(t, patched)["incident_id"] != incidentID.String() {
+		t.Fatalf("patched resource %#v", patched)
+	}
+	fetched := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/resources/"+resourceID, ""), http.StatusOK)
+	if dataObject(t, fetched)["incident_id"] != incidentID.String() {
+		t.Fatalf("fetched resource %#v", fetched)
+	}
+	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
+	kept := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/resources/"+resourceID, ""), http.StatusOK)
+	if dataObject(t, kept)["incident_id"] != incidentID.String() {
+		t.Fatalf("PUT must not clear incident_id %#v", kept)
+	}
+	cleared := requireStatus(t, do(t, app, http.MethodPatch, "/dispatch/resources/"+resourceID+"/incident", `{"incident_id":null}`), http.StatusOK)
+	if dataObject(t, cleared)["incident_id"] != nil {
+		t.Fatalf("cleared resource %#v", cleared)
+	}
+	requireStatus(t, do(t, app, http.MethodPatch, "/dispatch/resources/"+uuid.New().String()+"/incident", fmt.Sprintf(`{"incident_id":"%s"}`, incidentID)), http.StatusNotFound)
+	requireStatus(t, do(t, app, http.MethodPatch, "/dispatch/resources/not-a-uuid/incident", `{}`), http.StatusBadRequest)
+	requireStatus(t, do(t, app, http.MethodPatch, "/dispatch/resources/"+resourceID+"/incident", `{`), http.StatusBadRequest)
 	emptyService, emptyIncident := uuid.New(), uuid.New()
 	none := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", fmt.Sprintf(`{"service_id":"%s","incident_id":"%s"}`, emptyService, emptyIncident)), http.StatusOK)
 	var nullRows int64

@@ -1141,6 +1141,32 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /dispatch/resources/{id}/incident:
+    patch:
+      tags: [Resources]
+      summary: Set the incident a unit is attached to
+      description: Sets resource.incident_id for the unit. A null incident_id detaches the unit.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                incident_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "200":
+          description: The updated unit
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /dispatch/resources/drivers:
     post:
       tags: [Resources]

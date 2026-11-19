@@ -393,6 +393,7 @@ type Resource struct {
 	DriverUserID      *uuid.UUID `gorm:"column:driver_user_id;type:uuid" json:"driver_user_id"`
 	ShiftID           *uuid.UUID `gorm:"column:shift_id;type:uuid" json:"shift_id"`
 	PartnerUserID     *uuid.UUID `gorm:"column:partner_user_id;type:uuid" json:"partner_user_id"`
+	IncidentID        *uuid.UUID `gorm:"column:incident_id;type:uuid" json:"incident_id"`
 	Latitude          *float64   `gorm:"-" json:"latitude"`
 	Longitude         *float64   `gorm:"-" json:"longitude"`
 	UniqueID          string     `gorm:"-" json:"unique_id"`
@@ -435,6 +436,7 @@ type ResourceResponse struct {
 	DriverUserID      *uuid.UUID  `json:"driver_user_id"`
 	ShiftID           *uuid.UUID  `json:"shift_id"`
 	PartnerUserID     *uuid.UUID  `json:"partner_user_id"`
+	IncidentID        *uuid.UUID  `json:"incident_id"`
 	Latitude          *float64    `json:"latitude"`
 	Longitude         *float64    `json:"longitude"`
 	UniqueID          string      `json:"unique_id"`
@@ -469,6 +471,7 @@ func (r Resource) Response() ResourceResponse {
 		DriverUserID:      r.DriverUserID,
 		ShiftID:           r.ShiftID,
 		PartnerUserID:     r.PartnerUserID,
+		IncidentID:        r.IncidentID,
 		Latitude:          r.Latitude,
 		Longitude:         r.Longitude,
 		UniqueID:          r.UniqueID,
@@ -537,6 +540,11 @@ func (m *IncidentServiceResource) BeforeCreate(_ *gorm.DB) error {
 		m.ID = uuid.New()
 	}
 	return nil
+}
+
+// ResourceIncidentUpdateRequest sets the incident a unit is attached to; null clears it.
+type ResourceIncidentUpdateRequest struct {
+	IncidentID *uuid.UUID `json:"incident_id"`
 }
 
 // ResourceIncidentsRequest asks for the incidents recorded for a resource at a service point.

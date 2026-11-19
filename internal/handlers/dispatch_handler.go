@@ -346,6 +346,22 @@ func (h *ResourceHandler) Incidents(c *fiber.Ctx) error {
 	return utils.SuccessResponse(c, fiber.StatusOK, "incidents retrieved", out)
 }
 
+func (h *ResourceHandler) SetIncident(c *fiber.Ctx) error {
+	id, err := pathID(c, "id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	var req models.ResourceIncidentUpdateRequest
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	row, err := h.svc.SetIncident(c.UserContext(), id, req.IncidentID)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "resource incident updated", row)
+}
+
 func (h *ResourceHandler) Update(c *fiber.Ctx) error {
 	id, err := pathID(c, "id")
 	if err != nil {

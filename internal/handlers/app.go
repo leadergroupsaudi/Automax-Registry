@@ -134,6 +134,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	}
 	dispatch.Get("/resources/:id", resourceHandler.Get)
 	dispatch.Put("/resources/:id", resourceHandler.Update)
+	dispatch.Patch("/resources/:id/incident", resourceHandler.SetIncident)
 	dispatch.Delete("/resources/:id", resourceHandler.Delete)
 
 	dispatch.Get("/service-points", servicePointHandler.List)

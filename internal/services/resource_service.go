@@ -258,6 +258,21 @@ func (s *ResourceService) forget(ctx context.Context, id uuid.UUID) {
 	}
 }
 
+// SetIncident attaches the unit to an incident, or detaches it when incidentID is nil.
+func (s *ResourceService) SetIncident(ctx context.Context, id uuid.UUID, incidentID *uuid.UUID) (*models.ResourceResponse, error) {
+	if incidentID != nil && *incidentID == uuid.Nil {
+		return nil, Invalid("validation failed", map[string]string{"incident_id": "incident_id must be a UUID"})
+	}
+	err := s.resources.SetIncident(ctx, id, incidentID)
+	if repository.IsNotFound(err) {
+		return nil, NotFound("resource not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *ResourceService) Get(ctx context.Context, id uuid.UUID) (*models.ResourceResponse, error) {
 	s.refreshLocations(ctx)
 	row, err := s.resources.FindByID(ctx, id)

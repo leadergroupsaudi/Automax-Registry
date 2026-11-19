@@ -19,6 +19,7 @@ type ResourceRepository interface {
 	Exists(ctx context.Context, id uuid.UUID) (bool, error)
 	SetStatus(ctx context.Context, id uuid.UUID, status string) error
 	DriversByServicePoint(ctx context.Context, servicePointID uuid.UUID) ([]models.ResourceDriver, error)
+	SetIncident(ctx context.Context, id uuid.UUID, incidentID *uuid.UUID) error
 	SaveIncidentMapping(ctx context.Context, serviceID, incidentID uuid.UUID, resourceIDs []uuid.UUID) error
 	IncidentIDsByResourceAndService(ctx context.Context, resourceID uuid.UUID) ([]uuid.UUID, error)
 }
@@ -35,7 +36,7 @@ const resourceSelect = `
 	       r.alternate_name, r.plate_number, r.location_name, r.classification,
 	       r.description, r.radio_id, r.is_active, r.active_till_date, r.call_code,
 	       r.unit_code, r.location_id, r.classification_ids, r.gprs, r.sms, r.sms_vip, r.sim,
-	       r.driver_user_id, r.shift_id, r.partner_user_id,
+	       r.driver_user_id, r.shift_id, r.partner_user_id, r.incident_id,
 	       COALESCE(er.external_id, '') AS unique_id,
 	       r.created_at, r.updated_at
 	FROM resource r
@@ -234,6 +235,7 @@ type resourceScan struct {
 	DriverUserID      *uuid.UUID
 	ShiftID           *uuid.UUID
 	PartnerUserID     *uuid.UUID
+	IncidentID        *uuid.UUID
 	Latitude          *float64
 	Longitude         *float64
 	UniqueID          string `gorm:"column:unique_id"`
@@ -274,6 +276,7 @@ func (r *resourceRepository) query(ctx context.Context, sql string, args ...any)
 			DriverUserID:      row.DriverUserID,
 			ShiftID:           row.ShiftID,
 			PartnerUserID:     row.PartnerUserID,
+			IncidentID:        row.IncidentID,
 			Latitude:          row.Latitude,
 			Longitude:         row.Longitude,
 			UniqueID:          row.UniqueID,
@@ -300,6 +303,18 @@ func (r *resourceRepository) SetStatus(ctx context.Context, id uuid.UUID, status
 		}
 		return applyThingResource(tx, row.ThingID, row.ResourceTypeID, row.ServicePointID, status)
 	})
+}
+
+func (r *resourceRepository) SetIncident(ctx context.Context, id uuid.UUID, incidentID *uuid.UUID) error {
+	res := r.db.WithContext(ctx).Model(&models.Resource{}).Where("id = ?", id).
+		Updates(map[string]any{"incident_id": incidentID, "updated_at": gorm.Expr("now()")})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *resourceRepository) Exists(ctx context.Context, id uuid.UUID) (bool, error) {
