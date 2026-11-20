@@ -22,6 +22,10 @@ type caguarCatalog interface {
 	Positions(ctx context.Context) ([]caguar.Position, error)
 }
 
+type driverCatalog interface {
+	Drivers(ctx context.Context) ([]caguar.Driver, error)
+}
+
 // CaguarSync copies the latest Caguar fix onto the registry unit.
 // A device created from a unit starts with the registry's id. When that id is
 // replaced in Caguar with the phone's tracker id, the match follows the unit name.
@@ -30,6 +34,7 @@ type CaguarSync struct {
 	refs      repository.ExternalRefRepository
 	things    repository.ThingRepository
 	resources repository.ResourceRepository
+	drivers   repository.DriverRepository
 	outbox    repository.CaguarSyncRepository
 	writer    Portal
 	every     time.Duration
@@ -50,6 +55,13 @@ func (s *CaguarSync) UseResources(resources repository.ResourceRepository) {
 		return
 	}
 	s.resources = resources
+}
+
+func (s *CaguarSync) UseDrivers(drivers repository.DriverRepository) {
+	if s == nil {
+		return
+	}
+	s.drivers = drivers
 }
 
 func (s *CaguarSync) UseOutbox(outbox repository.CaguarSyncRepository) {
@@ -127,6 +139,9 @@ func (s *CaguarSync) pull(ctx context.Context) error {
 		if err := s.mirrorDevice(ctx, update); err != nil {
 			log.Printf("registry: caguar field sync failed thing_id=%s unique_id=%s err=%v", update.ThingID, update.ExternalID, err)
 		}
+	}
+	if err := s.mirrorDrivers(ctx); err != nil {
+		log.Printf("registry: caguar driver sync failed err=%v", err)
 	}
 	return nil
 }
@@ -382,6 +397,62 @@ func (s *CaguarSync) dropRef(ctx context.Context, thingID uuid.UUID) {
 	if err := s.refs.Delete(ctx, ref.ID); err != nil && !repository.IsNotFound(err) {
 		log.Printf("registry: caguar sync ref delete failed thing_id=%s ref_id=%s err=%v", thingID, ref.ID, err)
 	}
+}
+
+func (s *CaguarSync) mirrorDrivers(ctx context.Context) error {
+	if s == nil || s.drivers == nil {
+		return nil
+	}
+	locals, err := s.drivers.List(ctx)
+	if err != nil {
+		return err
+	}
+	byUnique := map[string]*models.Driver{}
+	for i := range locals {
+		byUnique[locals[i].UniqueID] = &locals[i]
+	}
+	for i := range locals {
+		row := &locals[i]
+		if row.PendingAction == "" || s.writer == nil {
+			continue
+		}
+		body := caguar.Driver{Name: row.Name, UniqueID: row.UniqueID, Product: caguar.ProductAutomax}
+		var pushErr error
+		if row.PendingAction == "create" {
+			pushErr = s.writer.RegisterDriver(ctx, body)
+		} else {
+			pushErr = s.writer.UpdateDriver(ctx, row.UniqueID, body)
+		}
+		if pushErr != nil {
+			log.Printf("registry: caguar driver sync queued id=%s unique_id=%s action=%s err=%v", row.ID, row.UniqueID, row.PendingAction, pushErr)
+			continue
+		}
+		row.PendingAction = ""
+		if err := s.drivers.Update(ctx, row); err != nil {
+			return err
+		}
+		log.Printf("registry: caguar driver sync sent id=%s unique_id=%s name=%s", row.ID, row.UniqueID, row.Name)
+	}
+	catalog, ok := s.portal.(driverCatalog)
+	if !ok {
+		return nil
+	}
+	remote, err := catalog.Drivers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, driver := range remote {
+		row := byUnique[driver.UniqueID]
+		if row == nil || row.PendingAction != "" || driver.Name == "" || driver.Name == row.Name {
+			continue
+		}
+		row.Name = driver.Name
+		if err := s.drivers.Update(ctx, row); err != nil {
+			return err
+		}
+		log.Printf("registry: caguar driver name applied unique_id=%s name=%s", row.UniqueID, row.Name)
+	}
+	return nil
 }
 
 func (s *CaguarSync) mirrorDevice(ctx context.Context, update caguarUpdate) error {

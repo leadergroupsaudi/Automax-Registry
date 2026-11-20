@@ -3,6 +3,7 @@ package caguar
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -57,7 +58,7 @@ func TestRegisterDeviceAndDriver(t *testing.T) {
 	if err := client.RegisterDriver(context.Background(), Driver{Name: "Test Driver Go", UniqueID: "DRV001"}); err != nil {
 		t.Fatal(err)
 	}
-	if driverBody["name"] != "Test Driver Go" || driverBody["uniqueId"] != "DRV001" {
+	if driverBody["name"] != "Test Driver Go" || driverBody["uniqueId"] != "DRV001" || driverBody["product"] != ProductAutomax {
 		t.Fatalf("driver %#v", driverBody)
 	}
 }
@@ -125,7 +126,7 @@ func TestLoginReadsTokenFromJSON(t *testing.T) {
 }
 
 func TestUpdateDeviceKeepsPortalGroups(t *testing.T) {
-	var method, path string
+	var method, path, product string
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -134,10 +135,11 @@ func TestUpdateDeviceKeepsPortalGroups(t *testing.T) {
 				t.Errorf("uniqueId %q", r.URL.Query().Get("uniqueId"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"success":true,"data":[{"id":44,"name":"Old","uniqueId":"OLD-1","status":"online","groupIds":[7],"zoneIds":[3],"calendarId":2,"attributes":{"keep":true}}]}`))
+			w.Write([]byte(`{"success":true,"data":[{"id":44,"name":"Old","uniqueId":"OLD-1","status":"online","product":"automax","groupIds":[7],"zoneIds":[3],"calendarId":2,"attributes":{"keep":true}}]}`))
 		case r.Method == http.MethodPut && r.URL.Path == "/api/devices/44":
 			method = r.Method
 			path = r.URL.Path
+			product = r.URL.Query().Get("product")
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode: %v", err)
 			}
@@ -155,14 +157,11 @@ func TestUpdateDeviceKeepsPortalGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if method != http.MethodPut || path != "/api/devices/44" {
-		t.Fatalf("method %s path %s", method, path)
+	if method != http.MethodPut || path != "/api/devices/44" || product != ProductAutomax {
+		t.Fatalf("method %s path %s product %q", method, path, product)
 	}
-	if body["uniqueId"] != "NEW-1" || body["status"] != "online" || body["disabled"] != true {
+	if body["product"] != ProductAutomax || body["uniqueId"] != "NEW-1" || body["status"] != "online" || body["disabled"] != true {
 		t.Fatalf("body %#v", body)
-	}
-	if _, sent := body["product"]; sent {
-		t.Fatalf("update must not send product, body %#v", body)
 	}
 	groups, ok := body["groupIds"].([]any)
 	if !ok || len(groups) != 1 || groups[0] != float64(7) {
@@ -171,7 +170,7 @@ func TestUpdateDeviceKeepsPortalGroups(t *testing.T) {
 }
 
 func TestUpdateDeviceFallsBackWhenLookupIsRestricted(t *testing.T) {
-	var method, path string
+	var method, path, product string
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -183,6 +182,7 @@ func TestUpdateDeviceFallsBackWhenLookupIsRestricted(t *testing.T) {
 		case r.Method == http.MethodPut && r.URL.Path == "/api/devices/44":
 			method = r.Method
 			path = r.URL.Path
+			product = r.URL.Query().Get("product")
 			json.NewDecoder(r.Body).Decode(&body)
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -197,11 +197,8 @@ func TestUpdateDeviceFallsBackWhenLookupIsRestricted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if method != http.MethodPut || path != "/api/devices/44" || body["name"] != "Engine 1355" {
-		t.Fatalf("method %s path %s body %#v", method, path, body)
-	}
-	if _, sent := body["product"]; sent {
-		t.Fatalf("product %#v", body["product"])
+	if method != http.MethodPut || path != "/api/devices/44" || product != ProductAutomax || body["name"] != "Engine 1355" || body["product"] != ProductAutomax {
+		t.Fatalf("method %s path %s product %q body %#v", method, path, product, body)
 	}
 }
 
@@ -226,6 +223,59 @@ func TestDeleteDevice(t *testing.T) {
 	}
 	if method != http.MethodDelete || path != "/api/devices/44" {
 		t.Fatalf("method %s path %s", method, path)
+	}
+}
+
+func TestUpdateDriverSendsProductOnQueryAndBody(t *testing.T) {
+	var method, path, product string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/drivers":
+			w.Write([]byte(`[{"id":15,"name":"localtesting","uniqueId":"USER-1"}]`))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/drivers/15":
+			method = r.Method
+			path = r.URL.Path
+			product = r.URL.Query().Get("product")
+			json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	err := New(srv.URL, "secret-token").UpdateDriver(context.Background(), "USER-1", Driver{Name: "localtest", UniqueID: "USER-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/api/drivers/15" || product != ProductAutomax || body["name"] != "localtest" || body["product"] != ProductAutomax {
+		t.Fatalf("method %s path %s product %q body %#v", method, path, product, body)
+	}
+}
+
+func TestDeleteDriverSendsProductQueryAndNumericBody(t *testing.T) {
+	var method, path, product, raw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/drivers":
+			w.Write([]byte(`[{"id":15,"name":"localtesttt0","uniqueId":"USER-1","product":"automax"}]`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/drivers/15":
+			method = r.Method
+			path = r.URL.Path
+			product = r.URL.Query().Get("product")
+			buf, _ := io.ReadAll(r.Body)
+			raw = string(buf)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	if err := New(srv.URL, "secret-token").DeleteDriver(context.Background(), "USER-1"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodDelete || path != "/api/drivers/15" || product != ProductAutomax || raw != "15" {
+		t.Fatalf("method %s path %s product %q body %q", method, path, product, raw)
 	}
 }
 

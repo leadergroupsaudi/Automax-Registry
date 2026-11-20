@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -43,10 +44,13 @@ type Device struct {
 // ProductAutomax is the product value sent on every device create and update.
 const ProductAutomax = "automax"
 
-// Driver is the body Caguar stores for POST /api/drivers.
+// Driver is the body Caguar stores for POST /api/drivers and PUT /api/drivers/{id}.
 type Driver struct {
+	ID       int    `json:"id,omitempty"`
 	Name     string `json:"name"`
 	UniqueID string `json:"uniqueId"`
+	// Product tells Caguar this driver was created by Automax.
+	Product string `json:"product,omitempty"`
 }
 
 // Position is the latest fix Caguar returns from GET /api/positions.
@@ -120,7 +124,9 @@ func (c *Client) RegisterDevice(ctx context.Context, device Device) error {
 	return c.post(ctx, "/api/devices", device)
 }
 
-// UpdateDevice loads the portal device by its current unique id, then sends PUT /api/devices/{id}.
+// UpdateDevice loads the portal device by its current unique id, then sends
+// PUT /api/devices/{id}?product=automax with product also set in the JSON body.
+// Caguar accepts the update only when both are present.
 // Group, zone, calendar, and attribute values already stored in Caguar are kept.
 // Status is replaced only when the caller set one.
 func (c *Client) UpdateDevice(ctx context.Context, currentUniqueID string, device Device) error {
@@ -157,10 +163,10 @@ func (c *Client) UpdateDevice(ctx context.Context, currentUniqueID string, devic
 	if found.Attributes == nil {
 		found.Attributes = map[string]any{}
 	}
-	// Leave product off the update. Caguar rejects a change that sends product=automax,
-	// and the value stored at create time stays on the device.
-	found.Product = ""
-	_, err = c.send(ctx, http.MethodPut, "/api/devices/"+strconv.Itoa(found.ID), found)
+	found.Product = ProductAutomax
+	q := url.Values{}
+	q.Set("product", ProductAutomax)
+	_, err = c.send(ctx, http.MethodPut, "/api/devices/"+strconv.Itoa(found.ID)+"?"+q.Encode(), found)
 	return err
 }
 
@@ -200,7 +206,83 @@ func (c *Client) DeleteDevice(ctx context.Context, uniqueID string) error {
 }
 
 func (c *Client) RegisterDriver(ctx context.Context, driver Driver) error {
+	driver.Product = ProductAutomax
 	return c.post(ctx, "/api/drivers", driver)
+}
+
+// UpdateDriver loads the portal driver by unique id, then sends
+// PUT /api/drivers/{id}?product=automax with product also set in the JSON body.
+// Caguar accepts the rename only when both are present.
+func (c *Client) UpdateDriver(ctx context.Context, currentUniqueID string, driver Driver) error {
+	currentUniqueID = strings.TrimSpace(currentUniqueID)
+	if currentUniqueID == "" {
+		currentUniqueID = driver.UniqueID
+	}
+	found, err := c.findDriver(ctx, currentUniqueID)
+	if err != nil {
+		return err
+	}
+	found.Name = driver.Name
+	found.UniqueID = driver.UniqueID
+	found.Product = ProductAutomax
+	q := url.Values{}
+	q.Set("product", ProductAutomax)
+	_, err = c.send(ctx, http.MethodPut, "/api/drivers/"+strconv.Itoa(found.ID)+"?"+q.Encode(), found)
+	return err
+}
+
+// DeleteDriver removes the portal driver with this unique id.
+// Caguar accepts the delete only when product=automax is on the query string
+// and the numeric driver id is the JSON body. A driver that is already gone is success.
+func (c *Client) DeleteDriver(ctx context.Context, uniqueID string) error {
+	found, err := c.findDriver(ctx, strings.TrimSpace(uniqueID))
+	if err != nil {
+		var remote *RemoteError
+		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
+			return nil
+		}
+		return err
+	}
+	q := url.Values{}
+	q.Set("product", ProductAutomax)
+	_, err = c.send(ctx, http.MethodDelete, "/api/drivers/"+strconv.Itoa(found.ID)+"?"+q.Encode(), found.ID)
+	if err != nil {
+		var remote *RemoteError
+		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
+			return nil
+		}
+	}
+	return err
+}
+
+// Drivers returns every driver the signed-in account can see.
+func (c *Client) Drivers(ctx context.Context) ([]Driver, error) {
+	raw, err := c.send(ctx, http.MethodGet, "/api/drivers", nil)
+	if err != nil {
+		return nil, err
+	}
+	list, err := decodeList(raw)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	var drivers []Driver
+	if err := json.Unmarshal(list, &drivers); err != nil {
+		return nil, err
+	}
+	return drivers, nil
+}
+
+func (c *Client) findDriver(ctx context.Context, uniqueID string) (Driver, error) {
+	drivers, err := c.Drivers(ctx)
+	if err != nil {
+		return Driver{}, err
+	}
+	for _, driver := range drivers {
+		if driver.ID != 0 && driver.UniqueID == uniqueID {
+			return driver, nil
+		}
+	}
+	return Driver{}, &RemoteError{Status: http.StatusNotFound, Body: "driver not found"}
 }
 
 // Devices returns every device the signed-in account can see.
@@ -281,6 +363,7 @@ func (c *Client) send(ctx context.Context, method, path string, body any) ([]byt
 	}
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, int64(limit)))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("registry: caguar request rejected method=%s path=%s status=%d", method, path, resp.StatusCode)
 		return nil, &RemoteError{Status: resp.StatusCode, Body: strings.TrimSpace(string(payload))}
 	}
 	return payload, nil

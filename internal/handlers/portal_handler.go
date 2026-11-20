@@ -61,3 +61,54 @@ func (h *DriverPortalHandler) Register(c *fiber.Ctx) error {
 	}
 	return utils.SuccessResponse(c, fiber.StatusCreated, "driver registered", row)
 }
+
+func (h *DriverPortalHandler) UpdateByUniqueID(c *fiber.Ctx) error {
+	id, err := pathID(c, "unique_id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	var req services.DriverNameUpdate
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	row, err := h.svc.UpdateByUniqueID(c.UserContext(), id.String(), req)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "driver updated", row)
+}
+
+func (h *DriverPortalHandler) Update(c *fiber.Ctx) error {
+	id, err := pathID(c, "id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	var req services.DriverNameUpdate
+	if err := c.BodyParser(&req); err != nil {
+		return badJSON(c)
+	}
+	row, err := h.svc.Update(c.UserContext(), id, req)
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "driver updated", row)
+}
+
+func (h *DriverPortalHandler) DeleteByUniqueID(c *fiber.Ctx) error {
+	id, err := pathID(c, "unique_id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
+	if err := h.svc.DeleteByUniqueID(c.UserContext(), id.String()); err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "driver deleted", nil)
+}
+
+func (h *DriverPortalHandler) List(c *fiber.Ctx) error {
+	rows, err := h.svc.List(c.UserContext())
+	if err != nil {
+		return writeServiceErr(c, err)
+	}
+	return utils.SuccessResponse(c, fiber.StatusOK, "drivers retrieved", rows)
+}

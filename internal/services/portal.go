@@ -24,6 +24,8 @@ type Portal interface {
 	UpdateDevice(ctx context.Context, currentUniqueID string, device caguar.Device) error
 	DeleteDevice(ctx context.Context, uniqueID string) error
 	RegisterDriver(ctx context.Context, driver caguar.Driver) error
+	UpdateDriver(ctx context.Context, currentUniqueID string, driver caguar.Driver) error
+	DeleteDriver(ctx context.Context, uniqueID string) error
 }
 
 type thingCreator interface {
@@ -363,23 +365,37 @@ type DriverRegistration struct {
 	UniqueIDCamel string `json:"uniqueId"`
 }
 
-// DriverResult is the driver accepted by Caguar.
+// DriverResult is the driver stored in the registry and sent to Caguar.
 type DriverResult struct {
-	Name     string `json:"name"`
-	UniqueID string `json:"unique_id"`
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	UniqueID string    `json:"unique_id"`
 }
 
-// DriverPortal sends a driver to Caguar. Both name and unique id are required.
+// DriverNameUpdate changes the driver name. The unique id stays as it was stored.
+type DriverNameUpdate struct {
+	Name string `json:"name"`
+}
+
+// DriverPortal stores a driver in the registry and sends the same driver to Caguar.
 type DriverPortal struct {
 	portal Portal
+	store  repository.DriverRepository
 }
 
 func NewDriverPortal(portal Portal) *DriverPortal {
 	return &DriverPortal{portal: portal}
 }
 
+func (s *DriverPortal) UseStore(store repository.DriverRepository) {
+	if s == nil {
+		return
+	}
+	s.store = store
+}
+
 func (s *DriverPortal) Register(ctx context.Context, req DriverRegistration) (*DriverResult, error) {
-	if s == nil || s.portal == nil {
+	if s == nil {
 		return nil, Unavailable("caguar is not configured")
 	}
 	fields := map[string]string{}
@@ -397,11 +413,169 @@ func (s *DriverPortal) Register(ctx context.Context, req DriverRegistration) (*D
 	if len(fields) > 0 {
 		return nil, Invalid("validation failed", fields)
 	}
-	if err := s.portal.RegisterDriver(ctx, caguar.Driver{Name: name, UniqueID: uniqueID}); err != nil {
-		return nil, portalErr("driver", uniqueID, err)
+	if s.portal == nil && s.store == nil {
+		return nil, Unavailable("caguar is not configured")
 	}
-	log.Printf("registry: caguar driver registered unique_id=%s name=%s", uniqueID, name)
-	return &DriverResult{Name: name, UniqueID: uniqueID}, nil
+	body := caguar.Driver{Name: name, UniqueID: uniqueID, Product: caguar.ProductAutomax}
+	row := &models.Driver{ID: uuid.New(), Name: name, UniqueID: uniqueID}
+	if s.store != nil {
+		existing, findErr := s.store.FindByUniqueID(ctx, uniqueID)
+		if findErr == nil && existing != nil {
+			return nil, Conflict("a driver with this unique id already exists")
+		}
+		if findErr != nil && !repository.IsNotFound(findErr) {
+			return nil, findErr
+		}
+		if err := s.store.Create(ctx, row); err != nil {
+			if repository.IsUniqueViolation(err) {
+				return nil, Conflict("a driver with this unique id already exists")
+			}
+			return nil, err
+		}
+	}
+	if s.portal == nil {
+		if s.store == nil {
+			return nil, Unavailable("caguar is not configured")
+		}
+		row.PendingAction = "create"
+		if err := s.store.Update(ctx, row); err != nil {
+			return nil, err
+		}
+		log.Printf("registry: driver stored locally; caguar sync queued id=%s unique_id=%s", row.ID, uniqueID)
+		return &DriverResult{ID: row.ID, Name: name, UniqueID: uniqueID}, nil
+	}
+	if err := s.portal.RegisterDriver(ctx, body); err != nil {
+		mapped := portalErr("driver", uniqueID, err)
+		if s.store != nil && caguarDeferred(mapped) {
+			row.PendingAction = "create"
+			if saveErr := s.store.Update(ctx, row); saveErr != nil {
+				return nil, saveErr
+			}
+			log.Printf("registry: driver stored locally; caguar sync queued id=%s unique_id=%s", row.ID, uniqueID)
+			return &DriverResult{ID: row.ID, Name: name, UniqueID: uniqueID}, nil
+		}
+		if s.store != nil {
+			if delErr := s.store.Delete(ctx, row.ID); delErr != nil {
+				log.Printf("registry: driver create rollback failed id=%s err=%v", row.ID, delErr)
+			}
+		}
+		return nil, mapped
+	}
+	log.Printf("registry: driver registered id=%s unique_id=%s name=%s", row.ID, uniqueID, name)
+	return &DriverResult{ID: row.ID, Name: name, UniqueID: uniqueID}, nil
+}
+
+// UpdateByUniqueID changes the name of the driver stored under this unique id.
+// The unique id is the Automax user id and is not changed.
+func (s *DriverPortal) UpdateByUniqueID(ctx context.Context, uniqueID string, req DriverNameUpdate) (*DriverResult, error) {
+	if s == nil || s.store == nil {
+		return nil, Unavailable("driver store is not configured")
+	}
+	uniqueID = strings.TrimSpace(uniqueID)
+	row, err := s.store.FindByUniqueID(ctx, uniqueID)
+	if repository.IsNotFound(err) {
+		return nil, NotFound("driver not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.Update(ctx, row.ID, req)
+}
+
+// Update changes the stored name and the same name in Caguar. The unique id is not changed.
+func (s *DriverPortal) Update(ctx context.Context, id uuid.UUID, req DriverNameUpdate) (*DriverResult, error) {
+	if s == nil || s.store == nil {
+		return nil, Unavailable("driver store is not configured")
+	}
+	row, err := s.store.FindByID(ctx, id)
+	if repository.IsNotFound(err) {
+		return nil, NotFound("driver not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	fields := map[string]string{}
+	name := validateName(fields, "name", req.Name, 255)
+	if len(fields) > 0 {
+		return nil, Invalid("validation failed", fields)
+	}
+	if name == row.Name && row.PendingAction == "" {
+		return &DriverResult{ID: row.ID, Name: row.Name, UniqueID: row.UniqueID}, nil
+	}
+	previous := row.Name
+	row.Name = name
+	body := caguar.Driver{Name: name, UniqueID: row.UniqueID, Product: caguar.ProductAutomax}
+	if s.portal == nil {
+		row.PendingAction = "update"
+		if err := s.store.Update(ctx, row); err != nil {
+			return nil, err
+		}
+		log.Printf("registry: driver name stored locally; caguar sync queued id=%s unique_id=%s", row.ID, row.UniqueID)
+		return &DriverResult{ID: row.ID, Name: name, UniqueID: row.UniqueID}, nil
+	}
+	if err := s.portal.UpdateDriver(ctx, row.UniqueID, body); err != nil {
+		mapped := portalErr("driver", row.UniqueID, err)
+		if caguarDeferred(mapped) {
+			row.PendingAction = "update"
+			if saveErr := s.store.Update(ctx, row); saveErr != nil {
+				return nil, saveErr
+			}
+			log.Printf("registry: driver name stored locally; caguar sync queued id=%s unique_id=%s", row.ID, row.UniqueID)
+			return &DriverResult{ID: row.ID, Name: name, UniqueID: row.UniqueID}, nil
+		}
+		log.Printf("registry: driver update rejected by caguar id=%s unique_id=%s previous_name=%s reason=%v", row.ID, row.UniqueID, previous, mapped)
+		return nil, mapped
+	}
+	row.PendingAction = ""
+	if err := s.store.Update(ctx, row); err != nil {
+		return nil, err
+	}
+	log.Printf("registry: driver updated id=%s unique_id=%s name=%s", row.ID, row.UniqueID, name)
+	return &DriverResult{ID: row.ID, Name: name, UniqueID: row.UniqueID}, nil
+}
+
+// DeleteByUniqueID removes the registry driver and the same driver in Caguar.
+// The unique id is the Automax user id.
+func (s *DriverPortal) DeleteByUniqueID(ctx context.Context, uniqueID string) error {
+	if s == nil || s.store == nil {
+		return Unavailable("driver store is not configured")
+	}
+	uniqueID = strings.TrimSpace(uniqueID)
+	row, err := s.store.FindByUniqueID(ctx, uniqueID)
+	if repository.IsNotFound(err) {
+		return NotFound("driver not found")
+	}
+	if err != nil {
+		return err
+	}
+	if s.portal != nil {
+		if err := s.portal.DeleteDriver(ctx, row.UniqueID); err != nil {
+			mapped := portalErr("driver", row.UniqueID, err)
+			log.Printf("registry: driver delete rejected by caguar id=%s unique_id=%s reason=%v", row.ID, row.UniqueID, mapped)
+			return mapped
+		}
+	}
+	if err := s.store.Delete(ctx, row.ID); err != nil {
+		return err
+	}
+	log.Printf("registry: driver deleted id=%s unique_id=%s name=%s", row.ID, row.UniqueID, row.Name)
+	return nil
+}
+
+// List returns the drivers stored in the registry.
+func (s *DriverPortal) List(ctx context.Context) ([]DriverResult, error) {
+	if s == nil || s.store == nil {
+		return nil, Unavailable("driver store is not configured")
+	}
+	rows, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DriverResult, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, DriverResult{ID: row.ID, Name: row.Name, UniqueID: row.UniqueID})
+	}
+	return out, nil
 }
 
 func normalizeDevice(req DeviceRegistration) (name, uniqueID, tracker, plate, chassis, status, category string, disabled bool, fields map[string]string) {

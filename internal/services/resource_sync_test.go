@@ -432,6 +432,10 @@ func (p *syncPortal) DeleteDevice(_ context.Context, uniqueID string) error {
 	return p.err
 }
 func (p *syncPortal) RegisterDriver(context.Context, caguar.Driver) error { return p.err }
+func (p *syncPortal) UpdateDriver(context.Context, string, caguar.Driver) error {
+	return p.err
+}
+func (p *syncPortal) DeleteDriver(context.Context, string) error { return p.err }
 
 type catalogStub struct{}
 

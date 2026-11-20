@@ -147,8 +147,42 @@ func TestDriverRegisterRequiresNameAndUniqueID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "Test Driver Go" || got.UniqueID != "DRV001" || portal.driver.UniqueID != "DRV001" {
+	if got.Name != "Test Driver Go" || got.UniqueID != "DRV001" || portal.driver.UniqueID != "DRV001" || portal.driver.Product != caguar.ProductAutomax {
 		t.Fatalf("driver %#v portal %#v", got, portal.driver)
+	}
+}
+
+func TestDriverRegisterStoresAndUpdatesName(t *testing.T) {
+	portal := &fakePortal{}
+	store := newMemDrivers()
+	svc := NewDriverPortal(portal)
+	svc.UseStore(store)
+	created, err := svc.Register(context.Background(), DriverRegistration{Name: "Ali", UniqueID: "DRV-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == uuid.Nil || store.rows[created.ID].Name != "Ali" || portal.driver.Product != caguar.ProductAutomax {
+		t.Fatalf("created %#v stored %#v", created, store.rows[created.ID])
+	}
+	if _, err := svc.Register(context.Background(), DriverRegistration{Name: "Other", UniqueID: "DRV-1"}); err == nil {
+		t.Fatal("expected duplicate unique id")
+	}
+	updated, err := svc.Update(context.Background(), created.ID, DriverNameUpdate{Name: "Ali Hassan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.UniqueID != "DRV-1" || updated.Name != "Ali Hassan" || portal.lookup != "DRV-1" || portal.driver.Name != "Ali Hassan" || portal.driver.Product != caguar.ProductAutomax {
+		t.Fatalf("updated %#v portal %#v lookup %s", updated, portal.driver, portal.lookup)
+	}
+	if store.rows[created.ID].Name != "Ali Hassan" {
+		t.Fatalf("stored %#v", store.rows[created.ID])
+	}
+	byUnique, err := svc.UpdateByUniqueID(context.Background(), "DRV-1", DriverNameUpdate{Name: "Ali H"})
+	if err != nil || byUnique.Name != "Ali H" || byUnique.UniqueID != "DRV-1" {
+		t.Fatalf("by unique %#v err %v", byUnique, err)
+	}
+	if _, err := svc.UpdateByUniqueID(context.Background(), "missing", DriverNameUpdate{Name: "No"}); err == nil {
+		t.Fatal("expected missing driver")
 	}
 }
 
@@ -204,6 +238,17 @@ func (f *fakePortal) DeleteDevice(_ context.Context, uniqueID string) error {
 
 func (f *fakePortal) RegisterDriver(_ context.Context, driver caguar.Driver) error {
 	f.driver = driver
+	return f.err
+}
+
+func (f *fakePortal) UpdateDriver(_ context.Context, currentUniqueID string, driver caguar.Driver) error {
+	f.lookup = currentUniqueID
+	f.driver = driver
+	return f.err
+}
+
+func (f *fakePortal) DeleteDriver(_ context.Context, uniqueID string) error {
+	f.lookup = uniqueID
 	return f.err
 }
 
@@ -301,6 +346,72 @@ func (s *stubPoints) AssignResources(context.Context, uuid.UUID, []uuid.UUID) er
 func (s *stubPoints) Exists(context.Context, uuid.UUID) (bool, error)               { return false, nil }
 func (s *stubPoints) ResourceCount(context.Context, uuid.UUID) (int64, error) {
 	return 0, nil
+}
+
+type memDrivers struct {
+	rows map[uuid.UUID]*models.Driver
+}
+
+func newMemDrivers() *memDrivers {
+	return &memDrivers{rows: map[uuid.UUID]*models.Driver{}}
+}
+
+func (m *memDrivers) Create(_ context.Context, row *models.Driver) error {
+	if row.ID == uuid.Nil {
+		row.ID = uuid.New()
+	}
+	for _, existing := range m.rows {
+		if existing.UniqueID == row.UniqueID {
+			return errors.New("duplicate unique id")
+		}
+	}
+	copied := *row
+	m.rows[row.ID] = &copied
+	return nil
+}
+
+func (m *memDrivers) Update(_ context.Context, row *models.Driver) error {
+	if _, ok := m.rows[row.ID]; !ok {
+		return gorm.ErrRecordNotFound
+	}
+	copied := *row
+	m.rows[row.ID] = &copied
+	return nil
+}
+
+func (m *memDrivers) Delete(_ context.Context, id uuid.UUID) error {
+	if _, ok := m.rows[id]; !ok {
+		return gorm.ErrRecordNotFound
+	}
+	delete(m.rows, id)
+	return nil
+}
+
+func (m *memDrivers) FindByID(_ context.Context, id uuid.UUID) (*models.Driver, error) {
+	row, ok := m.rows[id]
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	copied := *row
+	return &copied, nil
+}
+
+func (m *memDrivers) FindByUniqueID(_ context.Context, uniqueID string) (*models.Driver, error) {
+	for _, row := range m.rows {
+		if row.UniqueID == uniqueID {
+			copied := *row
+			return &copied, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *memDrivers) List(context.Context) ([]models.Driver, error) {
+	out := make([]models.Driver, 0, len(m.rows))
+	for _, row := range m.rows {
+		out = append(out, *row)
+	}
+	return out, nil
 }
 
 func errFields(t *testing.T, err error) map[string]string {

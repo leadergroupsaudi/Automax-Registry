@@ -457,10 +457,11 @@ paths:
   /registry/drivers:
     post:
       tags: [Devices and drivers]
-      summary: Register a driver name in Caguar
+      summary: Register a driver in the registry and in Caguar
       description: |
-        Sends the driver to Caguar only. It does not create an Automax user, a shift, or a unit assignment.
-        The driver the dispatcher assigns later is `user_id` from Automax-Backend, not this unique id.
+        Stores the driver in the registry `driver` table and sends the same name and unique id to Caguar with `product` set to `automax`.
+        It does not create an Automax user, a shift, or a unit assignment.
+        The driver selected on the unit form is `driver_user_id` from Automax-Backend, not this unique id.
       operationId: registerDriver
       requestBody:
         required: true
@@ -485,6 +486,40 @@ paths:
                         $ref: "#/components/schemas/DriverResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /registry/drivers/{id}:
+    put:
+      tags: [Devices and drivers]
+      summary: Update a driver name in the registry and in Caguar
+      description: |
+        Changes the name only. The unique id stays as it was stored.
+        Caguar receives `product` `automax` with the new name.
+        A name changed in Caguar is copied back onto this row on the next sync.
+      operationId: updateDriver
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+            example:
+              name: Ali Hassan
+      responses:
+        "200":
+          description: Driver updated
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "502":
           $ref: "#/components/responses/BadGateway"
         "503":

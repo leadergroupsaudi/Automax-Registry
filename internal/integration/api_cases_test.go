@@ -142,7 +142,8 @@ func TestDispatchValidationNotFoundAndMethod(t *testing.T) {
 	if errorFields(t, deviceAsThing)["thing_id"] == "thing_id must be a UUID" {
 		t.Fatalf("phone identifier was rejected as a UUID %#v", deviceAsThing)
 	}
-	if errorFields(t, deviceAsThing)["name"] != "name is required when thing_id is empty" {
+	fields := errorFields(t, deviceAsThing)
+	if fields["name"] != "name is required" || fields["chassis_number"] != "chassis_number is required" || fields["plate_number"] != "plate_number must match ABC-1234" {
 		t.Fatalf("caguar id in thing_id %#v", deviceAsThing)
 	}
 

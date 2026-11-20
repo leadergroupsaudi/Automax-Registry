@@ -50,7 +50,10 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	}
 	devicePortal := services.NewDevicePortal(thingSvc, refSvc, refs, portalAPI)
 	deviceHandler := NewDevicePortalHandler(devicePortal)
-	driverHandler := NewDriverPortalHandler(services.NewDriverPortal(portalAPI))
+	driverStore := repository.NewDriverRepository(db)
+	driverPortal := services.NewDriverPortal(portalAPI)
+	driverPortal.UseStore(driverStore)
+	driverHandler := NewDriverPortalHandler(driverPortal)
 
 	resourceTypes := repository.NewResourceTypeRepository(db)
 	servicePoints := repository.NewServicePointRepository(db)
@@ -74,6 +77,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 		sync.UseResources(resources)
 		sync.UseOutbox(outbox)
 		sync.UseWriter(portal)
+		sync.UseDrivers(driverStore)
 		resourceSvc.UseCaguarSync(sync)
 		go func() {
 			ticker := time.NewTicker(15 * time.Second)
@@ -111,7 +115,11 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	registry.Post("/things/:id/external-refs", externalRefHandler.Upsert)
 	registry.Post("/devices", deviceHandler.Register)
 	registry.Put("/devices/:id", deviceHandler.Update)
+	registry.Get("/drivers", driverHandler.List)
 	registry.Post("/drivers", driverHandler.Register)
+	registry.Put("/drivers/unique/:unique_id", driverHandler.UpdateByUniqueID)
+	registry.Delete("/drivers/unique/:unique_id", driverHandler.DeleteByUniqueID)
+	registry.Put("/drivers/:id", driverHandler.Update)
 	registry.Get("/things/:id/credentials", credentialHandler.List)
 	registry.Post("/things/:id/credentials", credentialHandler.Issue)
 	registry.Delete("/things/:id/credentials/:credentialId", credentialHandler.Revoke)
