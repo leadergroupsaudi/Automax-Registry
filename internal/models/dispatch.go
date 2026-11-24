@@ -25,6 +25,11 @@ const (
 	DispatchCompleted = "completed"
 	DispatchCancelled = "cancelled"
 
+	DispatchLogCreated       = "created"
+	DispatchLogStatusChanged = "status_changed"
+	DispatchLogUpdated       = "updated"
+	DispatchLogDeleted       = "deleted"
+
 	AssignmentScheduled = "scheduled"
 	AssignmentActive    = "active"
 	AssignmentCompleted = "completed"
@@ -708,16 +713,89 @@ type DispatchAssignmentResponse struct {
 }
 
 type DispatchAssignmentWriteRequest struct {
-	IncidentID uuid.UUID `json:"incident_id"`
-	ResourceID uuid.UUID `json:"resource_id"`
-	Role       string    `json:"role"`
-	Status     string    `json:"status"`
+	IncidentID     uuid.UUID  `json:"incident_id"`
+	ResourceID     uuid.UUID  `json:"resource_id"`
+	Role           string     `json:"role"`
+	Status         string     `json:"status"`
+	AcceptedByID   *uuid.UUID `json:"accepted_by_id"`
+	AcceptedByName string     `json:"accepted_by_name"`
 }
 
 type DispatchAssignmentFilter struct {
 	IncidentID *uuid.UUID
 	ResourceID *uuid.UUID
 	Status     string
+}
+
+// DispatchLog is one change to a dispatch assignment. Rows are append-only.
+type DispatchLog struct {
+	ID             uuid.UUID  `gorm:"column:id;type:uuid;primaryKey" json:"id"`
+	AssignmentID   uuid.UUID  `gorm:"column:assignment_id;type:uuid;not null" json:"assignment_id"`
+	IncidentID     uuid.UUID  `gorm:"column:incident_id;type:uuid;not null" json:"incident_id"`
+	ResourceID     uuid.UUID  `gorm:"column:resource_id;type:uuid;not null" json:"resource_id"`
+	Role           string     `gorm:"column:role;type:varchar(20);not null" json:"role"`
+	Action         string     `gorm:"column:action;type:varchar(20);not null" json:"action"`
+	FromStatus     *string    `gorm:"column:from_status;type:varchar(20)" json:"from_status"`
+	ToStatus       *string    `gorm:"column:to_status;type:varchar(20)" json:"to_status"`
+	AcceptedByID   *uuid.UUID `gorm:"column:accepted_by_id;type:uuid" json:"accepted_by_id"`
+	AcceptedByName *string    `gorm:"column:accepted_by_name;type:varchar(255)" json:"accepted_by_name"`
+	CreatedAt      time.Time  `gorm:"column:created_at;not null" json:"created_at"`
+}
+
+func (DispatchLog) TableName() string { return "dispatch_log" }
+
+func (l *DispatchLog) BeforeCreate(_ *gorm.DB) error {
+	if l.ID == uuid.Nil {
+		l.ID = uuid.New()
+	}
+	if l.CreatedAt.IsZero() {
+		l.CreatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+func (l DispatchLog) Response() DispatchLogResponse {
+	return DispatchLogResponse{
+		ID:             l.ID,
+		AssignmentID:   l.AssignmentID,
+		IncidentID:     l.IncidentID,
+		ResourceID:     l.ResourceID,
+		Role:           l.Role,
+		Action:         l.Action,
+		FromStatus:     l.FromStatus,
+		ToStatus:       l.ToStatus,
+		AcceptedByID:   l.AcceptedByID,
+		AcceptedByName: l.AcceptedByName,
+		CreatedAt:      l.CreatedAt,
+	}
+}
+
+// DispatchFireStation is a station an incident was assigned to.
+type DispatchFireStation struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+type DispatchLogResponse struct {
+	ID              uuid.UUID  `json:"id"`
+	AssignmentID    uuid.UUID  `json:"assignment_id"`
+	IncidentID      uuid.UUID  `json:"incident_id"`
+	ResourceID      uuid.UUID  `json:"resource_id"`
+	Role            string     `json:"role"`
+	Action          string     `json:"action"`
+	FromStatus      *string    `json:"from_status"`
+	ToStatus        *string    `json:"to_status"`
+	FireStationID   *uuid.UUID `json:"fire_station_id"`
+	FireStationName *string    `json:"fire_station_name"`
+	AcceptedByID    *uuid.UUID `json:"accepted_by_id"`
+	AcceptedByName  *string    `json:"accepted_by_name"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type DispatchLogFilter struct {
+	IncidentID   *uuid.UUID
+	ResourceID   *uuid.UUID
+	AssignmentID *uuid.UUID
 }
 
 // Occupancy is one scheduled or active assignment, with its shift clock when it has one.

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/automax/registry/internal/models"
@@ -24,11 +25,19 @@ var dispatchStatuses = []string{
 type DispatchAssignmentService struct {
 	repo      repository.DispatchAssignmentRepository
 	resources repository.ResourceRepository
+	logs      repository.DispatchLogRepository
 	state     ResourceStateCache
 }
 
 func NewDispatchAssignmentService(repo repository.DispatchAssignmentRepository, resources repository.ResourceRepository) *DispatchAssignmentService {
 	return &DispatchAssignmentService{repo: repo, resources: resources}
+}
+
+func (s *DispatchAssignmentService) UseLogs(logs repository.DispatchLogRepository) {
+	if s == nil {
+		return
+	}
+	s.logs = logs
 }
 
 func (s *DispatchAssignmentService) UseStateCache(cache ResourceStateCache) {
@@ -50,6 +59,9 @@ func (s *DispatchAssignmentService) Create(ctx context.Context, req models.Dispa
 		return nil, err
 	}
 	log.Printf("registry: dispatch assignment created id=%s incident_id=%s resource_id=%s role=%s status=%s", row.ID, row.IncidentID, row.ResourceID, row.Role, row.Status)
+	if err := s.record(ctx, models.DispatchLogCreated, nil, row, req); err != nil {
+		return nil, err
+	}
 	if err := s.syncResource(ctx, row.ResourceID); err != nil {
 		return nil, err
 	}
@@ -79,6 +91,15 @@ func (s *DispatchAssignmentService) Update(ctx context.Context, id uuid.UUID, re
 		return nil, err
 	}
 	log.Printf("registry: dispatch assignment updated id=%s incident_id=%s resource_id=%s role=%s status=%s", row.ID, row.IncidentID, row.ResourceID, row.Role, row.Status)
+	if assignmentChanged(current, row) {
+		action := models.DispatchLogUpdated
+		if current.Status != row.Status {
+			action = models.DispatchLogStatusChanged
+		}
+		if err := s.record(ctx, action, current, row, req); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.syncResource(ctx, row.ResourceID); err != nil {
 		return nil, err
 	}
@@ -106,6 +127,9 @@ func (s *DispatchAssignmentService) Delete(ctx context.Context, id uuid.UUID) er
 		return err
 	}
 	log.Printf("registry: dispatch assignment deleted id=%s", id)
+	if err := s.record(ctx, models.DispatchLogDeleted, current, current, models.DispatchAssignmentWriteRequest{}); err != nil {
+		return err
+	}
 	return s.syncResource(ctx, current.ResourceID)
 }
 
@@ -263,4 +287,62 @@ func (s *DispatchAssignmentService) remember(ctx context.Context, row *models.Re
 
 func dispatchOpen(status string) bool {
 	return status == models.DispatchOffered || status == models.DispatchAccepted
+}
+
+func assignmentChanged(current, row *models.DispatchAssignment) bool {
+	return current.IncidentID != row.IncidentID ||
+		current.ResourceID != row.ResourceID ||
+		current.Role != row.Role ||
+		current.Status != row.Status
+}
+
+func (s *DispatchAssignmentService) record(ctx context.Context, action string, from, to *models.DispatchAssignment, req models.DispatchAssignmentWriteRequest) error {
+	if s == nil || s.logs == nil || to == nil {
+		return nil
+	}
+	entry := &models.DispatchLog{
+		AssignmentID: to.ID,
+		IncidentID:   to.IncidentID,
+		ResourceID:   to.ResourceID,
+		Role:         to.Role,
+		Action:       action,
+		ToStatus:     statusPtr(to.Status),
+	}
+	if from != nil {
+		entry.FromStatus = statusPtr(from.Status)
+	}
+	if action == models.DispatchLogDeleted {
+		entry.ToStatus = nil
+	}
+	if action != models.DispatchLogDeleted && to.Status == models.DispatchAccepted {
+		entry.AcceptedByID = req.AcceptedByID
+		entry.AcceptedByName = textPtr(req.AcceptedByName)
+		if entry.AcceptedByID == nil || *entry.AcceptedByID == uuid.Nil {
+			entry.AcceptedByID = s.driverID(ctx, to.ResourceID)
+		}
+	}
+	return s.logs.Create(ctx, entry)
+}
+
+func (s *DispatchAssignmentService) driverID(ctx context.Context, resourceID uuid.UUID) *uuid.UUID {
+	if s == nil || s.resources == nil || resourceID == uuid.Nil {
+		return nil
+	}
+	resource, err := s.resources.FindByID(ctx, resourceID)
+	if err != nil || resource.DriverUserID == nil || *resource.DriverUserID == uuid.Nil {
+		return nil
+	}
+	return resource.DriverUserID
+}
+
+func statusPtr(status string) *string {
+	return textPtr(status)
+}
+
+func textPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }

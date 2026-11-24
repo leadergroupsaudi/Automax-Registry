@@ -74,6 +74,8 @@ tags:
     description: Which driver is on which unit, for which shift.
   - name: Dispatch assignments
     description: Which unit is offered to which incident.
+  - name: Dispatch logs
+    description: History of offers, status changes, and deletes. The assignment route is the current row only.
   - name: Positions
     description: Adapter only. Caguar posts tracker fixes here.
 
@@ -1424,6 +1426,46 @@ paths:
       responses:
         "200":
           description: Fire station alerts retrieved
+  /dispatch/logs:
+    get:
+      tags: [Dispatch logs]
+      summary: List dispatch history
+      description: |
+        Timeline of dispatch assignment changes, oldest first.
+        A row is written when a unit is offered, when its status or role changes, and when the assignment is deleted.
+        `GET /dispatch/assignments` is still the current offer only.
+        Filters are optional and can be combined. An empty filter returns every log.
+      operationId: listDispatchLogs
+      parameters:
+        - name: incident_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+        - name: resource_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+          description: The unit.
+        - name: assignment_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Dispatch logs retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Success"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DispatchLog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /dispatch/service-points:
     get:
       tags: [Service points]
@@ -1996,6 +2038,42 @@ components:
           example: true
         message:
           type: string
+    DispatchLog:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        assignment_id: {type: string, format: uuid}
+        incident_id: {type: string, format: uuid}
+        resource_id: {type: string, format: uuid, description: The unit.}
+        role: {type: string, enum: [master, supporting]}
+        action: {type: string, enum: [created, status_changed, updated, deleted]}
+        from_status:
+          type: string
+          nullable: true
+          enum: [offered, accepted, rejected, expired, completed, cancelled]
+          description: Status before this change. Null when the assignment is created.
+        to_status:
+          type: string
+          nullable: true
+          enum: [offered, accepted, rejected, expired, completed, cancelled]
+          description: Status after this change. Null when the assignment is deleted.
+        fire_station_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Station this incident was assigned to. When several stations were assigned, this is the unit's home station if that station is one of them.
+        fire_station_name:
+          type: string
+          nullable: true
+        accepted_by_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: User who accepted the offer. Set on the row whose to_status is accepted.
+        accepted_by_name:
+          type: string
+          nullable: true
+        created_at: {type: string, format: date-time}
     Error:
       type: object
       required: [success, error]

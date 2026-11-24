@@ -19,7 +19,7 @@ func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTables := []string{
-		"caguar_device_sync", "channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_ticket_projection",
+		"caguar_device_sync", "channel_acl", "channels", "device_credentials", "dispatch_assignment", "dispatch_icon", "dispatch_log", "dispatch_ticket_projection",
 		"driver", "fire_station_alert", "groups", "incident_service_resource", "resource", "resource_shift_assignment", "resource_type", "service_point", "shift",
 		"thing_external_refs", "things",
 	}
@@ -67,7 +67,7 @@ func TestSchemaHasRegistryAndDispatchTables(t *testing.T) {
 		"resource_shift_assignment.shift_id":    "shift|RESTRICT",
 		"dispatch_assignment.resource_id":       "resource|RESTRICT",
 		"incident_service_resource.resource_id": "resource|CASCADE",
-		"fire_station_alert.service_point_id": "service_point|RESTRICT",
+		"fire_station_alert.service_point_id":   "service_point|RESTRICT",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("foreign keys = %#v", got)

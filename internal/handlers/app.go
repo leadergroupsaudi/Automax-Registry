@@ -89,7 +89,9 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	}
 	assignmentSvc := services.NewAssignmentService(assignments, resources, shifts)
 	dispatchAssignments := repository.NewDispatchAssignmentRepository(db)
+	dispatchLogs := repository.NewDispatchLogRepository(db)
 	dispatchAssignmentSvc := services.NewDispatchAssignmentService(dispatchAssignments, resources)
+	dispatchAssignmentSvc.UseLogs(dispatchLogs)
 	if nearest != nil {
 		resourceSvc.UseStateCache(nearest)
 		assignmentSvc.UseDutyCache(nearest)
@@ -100,6 +102,8 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	dispatchAssignmentHandler := NewDispatchAssignmentHandler(dispatchAssignmentSvc)
 	fireStationAlerts := repository.NewFireStationAlertRepository(db)
 	fireStationAlertHandler := NewFireStationAlertHandler(services.NewFireStationAlertService(servicePoints, fireStationAlerts))
+	dispatchLogSvc := services.NewDispatchLogService(dispatchLogs)
+	dispatchLogSvc.UseFireStations(fireStationAlerts, resources)
 	var nearestHandler *NearestHandler
 	if nearest != nil {
 		nearestHandler = NewNearestHandler(nearest)
@@ -186,6 +190,7 @@ func NewApp(db *gorm.DB, pub services.Publisher, health HealthTargets, allowOrig
 	dispatch.Put("/resource-shift-assignments/:id", assignmentHandler.Update)
 	dispatch.Delete("/resource-shift-assignments/:id", assignmentHandler.Delete)
 
+	dispatch.Get("/logs", NewDispatchLogHandler(dispatchLogSvc).List)
 	dispatch.Get("/assignments", dispatchAssignmentHandler.List)
 	dispatch.Post("/assignments", dispatchAssignmentHandler.Create)
 	dispatch.Get("/assignments/:id", dispatchAssignmentHandler.Get)
