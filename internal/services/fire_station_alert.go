@@ -75,6 +75,30 @@ func (s *FireStationAlertService) record(ctx context.Context, incidentID uuid.UU
 		})
 		ids = append(ids, station.ID)
 	}
+	if incidentID != uuid.Nil {
+		existing, err := s.alerts.ListSelected(ctx, incident, ids)
+		if err != nil {
+			return nil, err
+		}
+		already := map[uuid.UUID]struct{}{}
+		for _, row := range existing {
+			already[row.ServicePointID] = struct{}{}
+		}
+		fresh := make([]models.FireStationAlert, 0, len(rows))
+		freshIDs := make([]uuid.UUID, 0, len(ids))
+		for i, row := range rows {
+			if _, ok := already[row.ServicePointID]; ok {
+				continue
+			}
+			fresh = append(fresh, row)
+			freshIDs = append(freshIDs, ids[i])
+		}
+		if len(fresh) == 0 {
+			return nil, Conflict("incident is already assigned to this fire station")
+		}
+		rows = fresh
+		ids = freshIDs
+	}
 	if err := s.alerts.Save(ctx, rows); err != nil {
 		log.Printf("registry: fire station alert failed incident_id=%s err=%v", incidentID, err)
 		return nil, err

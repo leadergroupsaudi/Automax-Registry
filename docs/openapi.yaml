@@ -1414,6 +1414,15 @@ paths:
       responses:
         "200":
           description: Fire stations alerted
+        "409":
+          description: The incident is already assigned to this fire station
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                success: false
+                error: incident is already assigned to this fire station
     get:
       tags: [Fire station alerts]
       summary: List fire stations already alerted for an incident

@@ -46,14 +46,23 @@ func TestFireStationAlertSelectedStations(t *testing.T) {
 	if len(got.Alerted) != 1 || got.Alerted[0].Name != "Manga" {
 		t.Fatalf("alerted %#v", got.Alerted)
 	}
-	again, err := h.svc.Alert(context.Background(), incident, models.FireStationAlertRequest{
+	_, err = h.svc.Alert(context.Background(), incident, models.FireStationAlertRequest{
 		DepartmentID: dept, ServicePointIDs: []uuid.UUID{second.ID},
 	})
-	if err != nil {
+	if err == nil || err.Error() != "incident is already assigned to this fire station" {
 		t.Fatal(err)
 	}
-	if len(again.Alerted) != 1 || len(h.alerts.rows) != 1 {
-		t.Fatalf("again %#v stored %d", again.Alerted, len(h.alerts.rows))
+	if se, ok := err.(*Error); !ok || se.Kind != KindConflict {
+		t.Fatalf("kind %#v", err)
+	}
+	if len(h.alerts.rows) != 1 {
+		t.Fatalf("stored %d", len(h.alerts.rows))
+	}
+	added, err := h.svc.Alert(context.Background(), incident, models.FireStationAlertRequest{
+		DepartmentID: dept, ServicePointIDs: []uuid.UUID{first.ID},
+	})
+	if err != nil || len(added.Alerted) != 1 || added.Alerted[0].Name != "Gufran" || len(h.alerts.rows) != 2 {
+		t.Fatalf("added %#v stored %d err %v", added, len(h.alerts.rows), err)
 	}
 }
 
