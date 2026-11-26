@@ -17,6 +17,7 @@ var hexColor = regexp.MustCompile(`^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$`)
 func mergeResourceType(current *models.ResourceType, req models.ResourceTypeWriteRequest) (*models.ResourceType, error) {
 	fields := map[string]string{}
 	name := validateName(fields, "name", req.Name, 255)
+	rejectSpecialName(fields, "name", name)
 	if req.DepartmentID == uuid.Nil {
 		fields["department_id"] = "department_id is required"
 	}
@@ -34,6 +35,9 @@ func mergeResourceType(current *models.ResourceType, req models.ResourceTypeWrit
 	}
 	code := optionalText(fields, "code", req.Code, base.Code, 64)
 	altName := optionalText(fields, "alt_name", req.AltName, base.AltName, 255)
+	if req.AltName != nil {
+		rejectSpecialName(fields, "alt_name", altName)
+	}
 	icon := optionalText(fields, "icon", req.Icon, base.Icon, 2048)
 	activeTill := optionalDate(fields, "active_till_date", req.ActiveTillDate, base.ActiveTillDate)
 	if len(fields) > 0 {
@@ -64,6 +68,7 @@ func mergeResourceType(current *models.ResourceType, req models.ResourceTypeWrit
 func mergeServicePoint(current *models.ServicePoint, req models.ServicePointWriteRequest) (*models.ServicePoint, error) {
 	fields := map[string]string{}
 	name := validateName(fields, "name", req.Name, 255)
+	rejectSpecialName(fields, "name", name)
 	if req.DepartmentID == uuid.Nil {
 		fields["department_id"] = "department_id is required"
 	}
@@ -82,6 +87,9 @@ func mergeServicePoint(current *models.ServicePoint, req models.ServicePointWrit
 		}
 	}
 	altName := optionalText(fields, "alt_name", req.AltName, base.AltName, 255)
+	if req.AltName != nil {
+		rejectSpecialName(fields, "alt_name", altName)
+	}
 	radioID := optionalText(fields, "radio_id", req.RadioID, base.RadioID, 100)
 	if radioID == "" {
 		fields["radio_id"] = "radio_id is required"
@@ -122,7 +130,13 @@ func applyResourceDetails(row *models.Resource, current *models.Resource, req mo
 	}
 	fields := map[string]string{}
 	row.AlternateName = optionalText(fields, "alternate_name", req.AlternateName, base.AlternateName, 255)
+	if req.AlternateName != nil {
+		rejectSpecialName(fields, "alternate_name", row.AlternateName)
+	}
 	row.PlateNumber = optionalText(fields, "plate_number", req.PlateNumber, base.PlateNumber, 64)
+	if req.PlateNumber != nil {
+		rejectSpecialName(fields, "plate_number", row.PlateNumber)
+	}
 	row.LocationName = optionalText(fields, "location_name", req.LocationName, base.LocationName, 255)
 	row.Description = optionalText(fields, "description", req.Description, base.Description, 4000)
 	row.RadioID = optionalText(fields, "radio_id", req.RadioID, base.RadioID, 100)

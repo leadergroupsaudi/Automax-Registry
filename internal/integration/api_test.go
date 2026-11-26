@@ -118,7 +118,15 @@ func errorFields(t *testing.T, body map[string]any) map[string]any {
 	if !ok {
 		t.Fatalf("errors = %#v", body)
 	}
-	return fields
+	out := make(map[string]any, len(fields))
+	for key, value := range fields {
+		if list, ok := value.([]any); ok && len(list) > 0 {
+			out[key] = list[0]
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func TestErrorsNameTheProblem(t *testing.T) {

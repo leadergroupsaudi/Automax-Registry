@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 
 	"github.com/automax/registry/internal/models"
@@ -34,6 +35,14 @@ func TestResourceTypeValidation(t *testing.T) {
 	}
 	code := string(long)
 	if _, err := mergeResourceType(nil, models.ResourceTypeWriteRequest{DepartmentID: dept, Name: "Truck", Code: &code}); errFields(t, err)["code"] == "" {
+		t.Fatal(err)
+	}
+
+	if _, err := mergeResourceType(nil, models.ResourceTypeWriteRequest{DepartmentID: dept, Name: "●●●●"}); errFields(t, err)["name"] != "name must not contain special characters" {
+		t.Fatalf("special name %#v", err)
+	}
+	arabic := "شاحنة"
+	if _, err := mergeResourceType(nil, models.ResourceTypeWriteRequest{DepartmentID: dept, Name: "Fire Truck", AltName: &arabic}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,6 +87,12 @@ func TestServicePointValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := mergeServicePoint(nil, models.ServicePointWriteRequest{
+		Name: "@@@", DepartmentID: dept, RadioID: &radio, Location: &models.LocationInput{Lat: &lat, Lng: &lng},
+	}); errFields(t, err)["name"] != "name must not contain special characters" {
+		t.Fatalf("special station %#v", err)
+	}
+
 	row, err := mergeServicePoint(nil, models.ServicePointWriteRequest{
 		Name: " Manga ", DepartmentID: dept, RadioID: &radio, Location: &models.LocationInput{Lat: &lat, Lng: &lng},
 	})
@@ -86,6 +101,20 @@ func TestServicePointValidation(t *testing.T) {
 	}
 	if row.Name != "Manga" || row.RadioID != "FS-1" || row.Latitude != lat || row.Longitude != lng || !row.IsActive {
 		t.Fatalf("row %#v", row)
+	}
+}
+
+func TestUnitNameRejectsSpecialCharacters(t *testing.T) {
+	s := &ResourceService{}
+	name := "●●●●"
+	_, err := s.ensureThing(context.Background(), &models.ResourceWriteRequest{Name: &name, ResourceTypeID: uuid.New()})
+	if errFields(t, err)["name"] != "name must not contain special characters" {
+		t.Fatalf("special unit %#v", err)
+	}
+	plate := "●●"
+	err = applyResourceDetails(&models.Resource{}, nil, models.ResourceWriteRequest{PlateNumber: &plate})
+	if errFields(t, err)["plate_number"] != "plate_number must not contain special characters" {
+		t.Fatalf("special plate %#v", err)
 	}
 }
 

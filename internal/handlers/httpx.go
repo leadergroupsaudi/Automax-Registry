@@ -48,7 +48,8 @@ func writeServiceErr(c *fiber.Ctx, err error) error {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 					"success": false,
 					"error":   se.Message,
-					"errors":  se.Fields,
+					"message": fieldMessage(se.Message, se.Fields),
+					"errors":  fieldErrors(se.Fields),
 				})
 			}
 			log.Printf("registry: %s %s rejected status=400 reason=%s", c.Method(), c.Path(), reason)
@@ -68,6 +69,25 @@ func writeServiceErr(c *fiber.Ctx, err error) error {
 		}
 	}
 	return utils.InternalErrorResponse(c, err, "internal server error")
+}
+
+func fieldMessage(fallback string, fields map[string]string) string {
+	if len(fields) == 1 {
+		for _, msg := range fields {
+			return msg
+		}
+	}
+	return fallback
+}
+
+// fieldErrors wraps each message in a list. The unit, unit type, and fire station
+// forms show errors[field][0], so a plain string is displayed as its first letter.
+func fieldErrors(fields map[string]string) map[string][]string {
+	out := make(map[string][]string, len(fields))
+	for name, msg := range fields {
+		out[name] = []string{msg}
+	}
+	return out
 }
 
 func fieldList(fields map[string]string) string {

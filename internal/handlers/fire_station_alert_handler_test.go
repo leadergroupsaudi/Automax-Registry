@@ -70,12 +70,13 @@ func TestFireStationAlertRouteRejectsAnEmptySelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var parsed struct {
-		Errors map[string]string `json:"errors"`
+		Errors map[string][]string `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusBadRequest || parsed.Errors["service_point_ids"] != "service_point_ids is required" {
+	got := parsed.Errors["service_point_ids"]
+	if resp.StatusCode != http.StatusBadRequest || len(got) != 1 || got[0] != "service_point_ids is required" {
 		t.Fatalf("status %d errors %#v", resp.StatusCode, parsed.Errors)
 	}
 }

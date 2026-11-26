@@ -851,15 +851,16 @@ func (s *ResourceService) ensureThing(ctx context.Context, req *models.ResourceW
 	if name == "" {
 		fields["thing_id"] = "thing_id is required"
 		fields["name"] = "name is required when thing_id is empty"
+	} else if utf8.RuneCountInString(name) > 255 {
+		fields["name"] = "name must be at most 255 characters"
+	} else {
+		rejectSpecialName(fields, "name", name)
 	}
 	if req.ResourceTypeID == uuid.Nil {
 		fields["resource_type_id"] = "resource_type_id is required"
 	}
 	if len(fields) > 0 {
 		return uuid.Nil, Invalid("validation failed", fields)
-	}
-	if utf8.RuneCountInString(name) > 255 {
-		return uuid.Nil, Invalid("validation failed", map[string]string{"name": "name must be at most 255 characters"})
 	}
 	typ, err := s.types.FindByID(ctx, req.ResourceTypeID)
 	if repository.IsNotFound(err) {
@@ -888,11 +889,16 @@ func (s *ResourceService) ensureThing(ctx context.Context, req *models.ResourceW
 
 func (s *ResourceService) renameThing(ctx context.Context, id uuid.UUID, name string) error {
 	name = strings.TrimSpace(name)
+	fields := map[string]string{}
 	if name == "" {
-		return Invalid("validation failed", map[string]string{"name": "name is required"})
+		fields["name"] = "name is required"
+	} else if utf8.RuneCountInString(name) > 255 {
+		fields["name"] = "name must be at most 255 characters"
+	} else {
+		rejectSpecialName(fields, "name", name)
 	}
-	if utf8.RuneCountInString(name) > 255 {
-		return Invalid("validation failed", map[string]string{"name": "name must be at most 255 characters"})
+	if len(fields) > 0 {
+		return Invalid("validation failed", fields)
 	}
 	thing, err := s.things.FindByID(ctx, id)
 	if repository.IsNotFound(err) {

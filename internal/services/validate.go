@@ -3,11 +3,16 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/automax/registry/internal/models"
 )
+
+// Letters from any language, numbers, spaces, and the marks used in real names.
+var nameSpecial = regexp.MustCompile(`[^\p{L}\p{N} \-'./&]`)
+var nameLetterOrNumber = regexp.MustCompile(`[\p{L}\p{N}]`)
 
 func validateName(fields map[string]string, field, value string, max int) string {
 	value = strings.TrimSpace(value)
@@ -18,6 +23,17 @@ func validateName(fields map[string]string, field, value string, max int) string
 		fields[field] = field + " must be at most " + itoa(max) + " characters"
 	}
 	return value
+}
+
+// rejectSpecialName records an error when a name uses a character outside letters,
+// numbers, spaces, and - ' . / &. An empty value is left for the required check.
+func rejectSpecialName(fields map[string]string, field, value string) {
+	if fields[field] != "" || value == "" {
+		return
+	}
+	if nameSpecial.MatchString(value) || !nameLetterOrNumber.MatchString(value) {
+		fields[field] = field + " must not contain special characters"
+	}
 }
 
 func validateMetadata(fields map[string]string, raw models.JSON) models.JSON {
