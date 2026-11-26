@@ -31,6 +31,7 @@ type ResourceService struct {
 	locate    *CaguarSync
 	outbox    repository.CaguarSyncRepository
 	state     ResourceStateCache
+	logs      *DispatchLogService
 	pub       Publisher
 }
 
@@ -59,6 +60,13 @@ func resourceWriteErr(err error, missingIsNotFound bool) error {
 		return Invalid("validation failed", map[string]string{"thing_id": "thing_id does not match a registry thing"})
 	}
 	return err
+}
+
+func (s *ResourceService) UseDispatchLog(logs *DispatchLogService) {
+	if s == nil {
+		return
+	}
+	s.logs = logs
 }
 
 func (s *ResourceService) UsePublisher(pub Publisher) {
@@ -140,7 +148,34 @@ func (s *ResourceService) DriverUserIDs(ctx context.Context, req models.Resource
 	if err := s.resources.SaveIncidentMapping(ctx, req.ServiceID, req.IncidentID, resourceIDs); err != nil {
 		return nil, err
 	}
+	if err := s.logIncidentStation(ctx, req.IncidentID, req.ServiceID); err != nil {
+		log.Printf("registry: incident station log failed incident_id=%s service_id=%s err=%v", req.IncidentID, req.ServiceID, err)
+		return nil, err
+	}
 	return &models.ResourceDriversResponse{DriverUserIDs: ids}, nil
+}
+
+func (s *ResourceService) logIncidentStation(ctx context.Context, incidentID, stationID uuid.UUID) error {
+	if s == nil || s.logs == nil || incidentID == uuid.Nil || stationID == uuid.Nil {
+		return nil
+	}
+	rows, err := s.logs.List(ctx, models.DispatchLogFilter{IncidentID: &incidentID, FireStationID: &stationID})
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Action == models.DispatchLogIncidentAssigned {
+			return nil
+		}
+	}
+	name, err := s.stationName(ctx, stationID)
+	if repository.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.logs.RecordIncidentStation(ctx, incidentID, stationID, name)
 }
 
 // IncidentIDs returns the incident ids recorded for a resource at a service point.
@@ -163,7 +198,7 @@ func (s *ResourceService) IncidentIDs(ctx context.Context, req models.ResourceIn
 }
 
 func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRequest) (*models.ResourceResponse, error) {
-	if err := validateTracker(&req); err != nil {
+	if err := validateUnit(&req); err != nil {
 		log.Printf("registry: unit create rejected before save reason=%v", err)
 		return nil, err
 	}
@@ -209,6 +244,10 @@ func (s *ResourceService) Create(ctx context.Context, req models.ResourceWriteRe
 		log.Printf("registry: resource created id=%s thing_id=%s resource_type_id=%s status=%s unique_id=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status, row.UniqueID)
 	}
 	s.remember(ctx, row)
+	if err := s.logHomeStation(ctx, row.ID, nil, row.ServicePointID); err != nil {
+		log.Printf("registry: unit station log failed id=%s err=%v", row.ID, err)
+		return nil, err
+	}
 	resp := row.Response()
 	publishEvent(s.pub, models.SubjectResourceCreated, row.ID, resp)
 	return &resp, nil
@@ -220,6 +259,10 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 		return nil, NotFound("resource not found")
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := validateUnit(&req); err != nil {
+		log.Printf("registry: unit update rejected id=%s reason=%v", id, err)
 		return nil, err
 	}
 	previousName := ""
@@ -272,6 +315,10 @@ func (s *ResourceService) Update(ctx context.Context, id uuid.UUID, req models.R
 		log.Printf("registry: resource updated id=%s thing_id=%s resource_type_id=%s status=%s unique_id=%s", row.ID, row.ThingID, row.ResourceTypeID, row.Status, row.UniqueID)
 	}
 	s.remember(ctx, row)
+	if err := s.logHomeStation(ctx, row.ID, current.ServicePointID, row.ServicePointID); err != nil {
+		log.Printf("registry: unit station log failed id=%s err=%v", row.ID, err)
+		return nil, err
+	}
 	resp := row.Response()
 	publishEvent(s.pub, models.SubjectResourceUpdated, row.ID, resp)
 	return &resp, nil
@@ -312,6 +359,48 @@ func (s *ResourceService) Delete(ctx context.Context, id uuid.UUID) error {
 	s.forget(ctx, id)
 	publishEvent(s.pub, models.SubjectResourceDeleted, id, nil)
 	return nil
+}
+
+func (s *ResourceService) logHomeStation(ctx context.Context, resourceID uuid.UUID, from, to *uuid.UUID) error {
+	if s == nil || s.logs == nil || sameStation(from, to) {
+		return nil
+	}
+	if from != nil && *from != uuid.Nil {
+		name, err := s.stationName(ctx, *from)
+		if err != nil {
+			return err
+		}
+		if err := s.logs.RecordUnitStation(ctx, resourceID, *from, name, false); err != nil {
+			return err
+		}
+	}
+	if to != nil && *to != uuid.Nil {
+		name, err := s.stationName(ctx, *to)
+		if err != nil {
+			return err
+		}
+		if err := s.logs.RecordUnitStation(ctx, resourceID, *to, name, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ResourceService) stationName(ctx context.Context, id uuid.UUID) (string, error) {
+	row, err := s.points.FindByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return row.Name, nil
+}
+
+func sameStation(a, b *uuid.UUID) bool {
+	aNil := a == nil || *a == uuid.Nil
+	bNil := b == nil || *b == uuid.Nil
+	if aNil || bNil {
+		return aNil && bNil
+	}
+	return *a == *b
 }
 
 func (s *ResourceService) remember(ctx context.Context, row *models.Resource) {
@@ -508,25 +597,29 @@ func (s *ResourceService) updateIdentifier(ctx context.Context, current *models.
 	return nil
 }
 
-func validateTracker(req *models.ResourceWriteRequest) error {
-	if req == nil || strings.TrimSpace(req.UniqueID) == "" {
-		return nil
-	}
+func validateUnit(req *models.ResourceWriteRequest) error {
 	fields := map[string]string{}
-	if req.Name == nil || strings.TrimSpace(*req.Name) == "" {
+	if req == nil || req.Name == nil || strings.TrimSpace(*req.Name) == "" {
 		fields["name"] = "name is required"
 	}
-	if len(strings.TrimSpace(req.UniqueID)) > 255 {
+	unique := ""
+	plate := ""
+	chassis := ""
+	if req != nil {
+		unique = strings.TrimSpace(req.UniqueID)
+		if req.PlateNumber != nil {
+			plate = strings.ToUpper(strings.TrimSpace(*req.PlateNumber))
+		}
+		chassis = strings.TrimSpace(req.ChassisNumber)
+	}
+	if unique == "" {
+		fields["unique_id"] = "unique_id is required"
+	} else if len(unique) > 255 {
 		fields["unique_id"] = "unique_id must be at most 255 characters"
 	}
-	plate := ""
-	if req.PlateNumber != nil {
-		plate = strings.ToUpper(strings.TrimSpace(*req.PlateNumber))
+	if plate == "" {
+		fields["plate_number"] = "plate_number is required"
 	}
-	if !platePattern.MatchString(plate) {
-		fields["plate_number"] = "plate_number must match ABC-1234"
-	}
-	chassis := strings.TrimSpace(req.ChassisNumber)
 	if chassis == "" {
 		fields["chassis_number"] = "chassis_number is required"
 	} else if len(chassis) > 64 {
@@ -620,12 +713,13 @@ func (s *ResourceService) registration(ctx context.Context, thingID uuid.UUID, r
 		tracker = "Vehicle"
 	}
 	return DeviceRegistration{
-		Name:          name,
-		UniqueID:      unique,
-		DepartmentID:  dept,
-		TrackerType:   tracker,
-		PlateNumber:   plate,
-		ChassisNumber: chassis,
+		Name:            name,
+		UniqueID:        unique,
+		DepartmentID:    dept,
+		TrackerType:     tracker,
+		PlateNumber:     plate,
+		ChassisNumber:   chassis,
+		SkipPlateFormat: true,
 	}
 }
 
@@ -709,6 +803,7 @@ func (s *ResourceService) pushUpdate(ctx context.Context, current, row *models.R
 	if strings.TrimSpace(reg.PlateNumber) == "" {
 		reg.PlateNumber = row.PlateNumber
 	}
+	reg.ExistingPlate = current.PlateNumber
 	if reg.UniqueID == "" {
 		return false, nil
 	}

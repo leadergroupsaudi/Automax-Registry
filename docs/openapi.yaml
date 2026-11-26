@@ -1390,7 +1390,8 @@ paths:
   /dispatch/incidents/{incident_id}/fire-station-alerts:
     post:
       tags: [Fire station alerts]
-      summary: Alert every active fire station in a department, or only the selected stations
+      summary: Assign an incident to every active fire station in a department, or only the selected stations
+      description: Each newly assigned station is written to the dispatch log as `incident_assigned`. Assigning the same station again returns 409.
       operationId: alertFireStations
       parameters:
         - name: incident_id
@@ -1440,8 +1441,11 @@ paths:
       tags: [Dispatch logs]
       summary: List dispatch history
       description: |
-        Timeline of dispatch assignment changes, oldest first.
-        A row is written when a unit is offered, when its status or role changes, and when the assignment is deleted.
+        Timeline, oldest first.
+        A row is written when a unit is offered to an incident, when that assignment's status or role changes, and when it is deleted.
+        A row is also written when a unit is dropped on a fire station or taken off one (`station_assigned`, `station_unassigned`), and when an incident is assigned to a fire station (`incident_assigned`).
+        Dropping a unit on a station is `PUT /dispatch/service-points/{id}` with `resource_ids`, or `PUT /dispatch/resources/{id}` with `service_point_id`.
+        Assigning an incident to a station is `POST /dispatch/incidents/{incident_id}/fire-station-alerts`.
         `GET /dispatch/assignments` is still the current offer only.
         Filters are optional and can be combined. An empty filter returns every log.
       operationId: listDispatchLogs
@@ -1459,6 +1463,11 @@ paths:
           in: query
           required: false
           schema: {type: string, format: uuid}
+        - name: fire_station_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+          description: Station a unit was dropped on, or a station an incident was assigned to.
       responses:
         "200":
           description: Dispatch logs retrieved
@@ -2051,11 +2060,11 @@ components:
       type: object
       properties:
         id: {type: string, format: uuid}
-        assignment_id: {type: string, format: uuid}
-        incident_id: {type: string, format: uuid}
-        resource_id: {type: string, format: uuid, description: The unit.}
-        role: {type: string, enum: [master, supporting]}
-        action: {type: string, enum: [created, status_changed, updated, deleted]}
+        assignment_id: {type: string, format: uuid, nullable: true, description: Set for a unit offer. Null for a station drop or an incident assigned to a station.}
+        incident_id: {type: string, format: uuid, nullable: true}
+        resource_id: {type: string, format: uuid, nullable: true, description: The unit. Null when the row is only an incident assigned to a station.}
+        role: {type: string, nullable: true, enum: [master, supporting]}
+        action: {type: string, enum: [created, status_changed, updated, deleted, station_assigned, station_unassigned, incident_assigned]}
         from_status:
           type: string
           nullable: true
@@ -2070,7 +2079,9 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Station this incident was assigned to. When several stations were assigned, this is the unit's home station if that station is one of them.
+          description: |
+            Station on this row. For `station_assigned`, `station_unassigned`, and `incident_assigned` it is the station in that action.
+            For a unit offer it is filled when the log is read: the unit's home station when that station was alerted, or the only alerted station.
         fire_station_name:
           type: string
           nullable: true

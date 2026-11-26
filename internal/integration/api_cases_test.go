@@ -143,7 +143,7 @@ func TestDispatchValidationNotFoundAndMethod(t *testing.T) {
 		t.Fatalf("phone identifier was rejected as a UUID %#v", deviceAsThing)
 	}
 	fields := errorFields(t, deviceAsThing)
-	if fields["name"] != "name is required" || fields["chassis_number"] != "chassis_number is required" || fields["plate_number"] != "plate_number must match ABC-1234" {
+	if fields["name"] != "name is required" || fields["chassis_number"] != "chassis_number is required" || fields["plate_number"] != "plate_number is required" {
 		t.Fatalf("caguar id in thing_id %#v", deviceAsThing)
 	}
 
@@ -220,9 +220,9 @@ func TestDispatchValidationNotFoundAndMethod(t *testing.T) {
 	thingID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/registry/things", fmt.Sprintf(
 		`{"name":"Truck","type":"vehicle","department_id":"%s"}`, dept)), http.StatusCreated))
 	resourceID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(
-		`{"thing_id":"%s","resource_type_id":"%s"}`, thingID, typeID)), http.StatusCreated))
+		`{"thing_id":"%s","resource_type_id":"%s","name":"Truck","unique_id":"UNIT-TRUCK","plate_number":"ENG-1013","chassis_number":"CHS1013"}`, thingID, typeID)), http.StatusCreated))
 	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(
-		`{"thing_id":"%s","resource_type_id":"%s"}`, thingID, typeID)), http.StatusConflict)
+		`{"thing_id":"%s","resource_type_id":"%s","name":"Truck","unique_id":"UNIT-TRUCK","plate_number":"ENG-1013","chassis_number":"CHS1013"}`, thingID, typeID)), http.StatusConflict)
 	user := uuid.New().String()
 	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resource-shift-assignments", fmt.Sprintf(
 		`{"resource_id":"%s","user_id":"%s","status":"Scheduled","start_at":"2026-10-26T10:00:00Z","end_at":"2026-10-26T11:00:00Z"}`, resourceID, user)), http.StatusBadRequest)

@@ -36,10 +36,46 @@ func (s *DispatchLogService) List(ctx context.Context, filter models.DispatchLog
 	out := make([]models.DispatchLogResponse, 0, len(rows))
 	for _, row := range rows {
 		item := row.Response()
-		item.FireStationID, item.FireStationName = pickFireStation(stations[row.IncidentID], homes[row.ResourceID])
+		if item.FireStationID == nil {
+			item.FireStationID, item.FireStationName = pickFireStation(stations[logID(row.IncidentID)], homes[logID(row.ResourceID)])
+		}
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// RecordUnitStation writes the drag of a unit onto or off a fire station.
+func (s *DispatchLogService) RecordUnitStation(ctx context.Context, resourceID, stationID uuid.UUID, stationName string, assigned bool) error {
+	if s == nil || s.repo == nil || resourceID == uuid.Nil || stationID == uuid.Nil {
+		return nil
+	}
+	action := models.DispatchLogStationUnassigned
+	if assigned {
+		action = models.DispatchLogStationAssigned
+	}
+	resource := resourceID
+	station := stationID
+	return s.repo.Create(ctx, &models.DispatchLog{
+		ResourceID:      &resource,
+		FireStationID:   &station,
+		FireStationName: textPtr(stationName),
+		Action:          action,
+	})
+}
+
+// RecordIncidentStation writes that an incident was assigned to a fire station.
+func (s *DispatchLogService) RecordIncidentStation(ctx context.Context, incidentID, stationID uuid.UUID, stationName string) error {
+	if s == nil || s.repo == nil || incidentID == uuid.Nil || stationID == uuid.Nil {
+		return nil
+	}
+	incident := incidentID
+	station := stationID
+	return s.repo.Create(ctx, &models.DispatchLog{
+		IncidentID:      &incident,
+		FireStationID:   &station,
+		FireStationName: textPtr(stationName),
+		Action:          models.DispatchLogIncidentAssigned,
+	})
 }
 
 func (s *DispatchLogService) stationsByIncident(ctx context.Context, rows []models.DispatchLog) map[uuid.UUID][]models.DispatchFireStation {
@@ -49,11 +85,15 @@ func (s *DispatchLogService) stationsByIncident(ctx context.Context, rows []mode
 	}
 	seen := map[uuid.UUID]struct{}{}
 	for _, row := range rows {
-		if _, ok := seen[row.IncidentID]; ok {
+		incidentID := logID(row.IncidentID)
+		if incidentID == uuid.Nil {
 			continue
 		}
-		seen[row.IncidentID] = struct{}{}
-		alerts, err := s.alerts.ListByIncident(ctx, row.IncidentID)
+		if _, ok := seen[incidentID]; ok {
+			continue
+		}
+		seen[incidentID] = struct{}{}
+		alerts, err := s.alerts.ListByIncident(ctx, incidentID)
 		if err != nil {
 			continue
 		}
@@ -64,7 +104,7 @@ func (s *DispatchLogService) stationsByIncident(ctx context.Context, rows []mode
 				Name: alert.Name,
 			})
 		}
-		out[row.IncidentID] = stations
+		out[incidentID] = stations
 	}
 	return out
 }
@@ -75,17 +115,28 @@ func (s *DispatchLogService) homeStationByResource(ctx context.Context, rows []m
 		return out
 	}
 	for _, row := range rows {
-		if _, ok := out[row.ResourceID]; ok {
+		resourceID := logID(row.ResourceID)
+		if resourceID == uuid.Nil {
 			continue
 		}
-		resource, err := s.resources.FindByID(ctx, row.ResourceID)
+		if _, ok := out[resourceID]; ok {
+			continue
+		}
+		resource, err := s.resources.FindByID(ctx, resourceID)
 		if err != nil || resource.ServicePointID == nil || *resource.ServicePointID == uuid.Nil {
-			out[row.ResourceID] = nil
+			out[resourceID] = nil
 			continue
 		}
-		out[row.ResourceID] = resource.ServicePointID
+		out[resourceID] = resource.ServicePointID
 	}
 	return out
+}
+
+func logID(id *uuid.UUID) uuid.UUID {
+	if id == nil {
+		return uuid.Nil
+	}
+	return *id
 }
 
 func pickFireStation(alerted []models.DispatchFireStation, home *uuid.UUID) (*uuid.UUID, *string) {

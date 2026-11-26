@@ -64,6 +64,29 @@ func TestDeviceRegisterValidatesAndSendsToCaguar(t *testing.T) {
 		t.Fatalf("conflict %#v", err)
 	}
 
+	portal.err = &caguar.RemoteError{Status: 400, Body: `{"http_code":400,"error":"Failed to add the device. Please try again later.","status":"ADD_FAILED"}`}
+	portal.devices = []caguar.Device{{
+		Name: "Unit 2", UniqueID: "123456", PlateNumber: "KLS-2345", ChassisNumber: "8848417876",
+	}}
+	_, err = svc.Register(context.Background(), DeviceRegistration{
+		Name: "testing", UniqueID: "123456", DepartmentID: dept,
+		TrackerType: "Vehicle", PlateNumber: "ABC-4565", ChassisNumber: "12345",
+	})
+	if errFields(t, err)["unique_id"] != "unique_id is already used in Caguar" {
+		t.Fatalf("taken unique id %#v", err)
+	}
+
+	portal.devices = []caguar.Device{{
+		Name: "Other Truck", UniqueID: "OTHER-9", PlateNumber: "ZZZ-0001", ChassisNumber: "12345",
+	}}
+	_, err = svc.Register(context.Background(), DeviceRegistration{
+		Name: "testing", UniqueID: "NEW-456", DepartmentID: dept,
+		TrackerType: "Vehicle", PlateNumber: "ABC-4565", ChassisNumber: "12345",
+	})
+	if errFields(t, err)["chassis_number"] != "chassis_number is already used in Caguar" {
+		t.Fatalf("taken chassis %#v", err)
+	}
+
 	portal.err = &caguar.RemoteError{Status: 500, Body: `{"error":"INTERNAL_ERROR"}`}
 	_, err = svc.Register(context.Background(), DeviceRegistration{
 		Name: "Other", UniqueID: "OTHER1", DepartmentID: dept,
@@ -214,10 +237,15 @@ func TestFindNearestServicePoints(t *testing.T) {
 }
 
 type fakePortal struct {
-	device caguar.Device
-	driver caguar.Driver
-	lookup string
-	err    error
+	device  caguar.Device
+	driver  caguar.Driver
+	lookup  string
+	err     error
+	devices []caguar.Device
+}
+
+func (f *fakePortal) Devices(context.Context) ([]caguar.Device, error) {
+	return f.devices, nil
 }
 
 func (f *fakePortal) RegisterDevice(_ context.Context, device caguar.Device) error {

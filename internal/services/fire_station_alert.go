@@ -12,10 +12,18 @@ import (
 type FireStationAlertService struct {
 	points repository.ServicePointRepository
 	alerts repository.FireStationAlertRepository
+	logs   *DispatchLogService
 }
 
 func NewFireStationAlertService(points repository.ServicePointRepository, alerts repository.FireStationAlertRepository) *FireStationAlertService {
 	return &FireStationAlertService{points: points, alerts: alerts}
+}
+
+func (s *FireStationAlertService) UseDispatchLog(logs *DispatchLogService) {
+	if s == nil {
+		return
+	}
+	s.logs = logs
 }
 
 func (s *FireStationAlertService) Alert(ctx context.Context, incidentID uuid.UUID, req models.FireStationAlertRequest) (*models.FireStationAlertResult, error) {
@@ -108,8 +116,24 @@ func (s *FireStationAlertService) record(ctx context.Context, incidentID uuid.UU
 		return nil, err
 	}
 	alerted := responsesFor(stored, stations)
+	if err := s.recordLogs(ctx, incidentID, alerted); err != nil {
+		log.Printf("registry: fire station assignment log failed incident_id=%s err=%v", incidentID, err)
+		return nil, err
+	}
 	log.Printf("registry: fire stations alerted incident_id=%s department_id=%s count=%d", incidentID, req.DepartmentID, len(alerted))
 	return &models.FireStationAlertResult{IncidentID: incident, Alerted: alerted}, nil
+}
+
+func (s *FireStationAlertService) recordLogs(ctx context.Context, incidentID uuid.UUID, alerted []models.FireStationAlertResponse) error {
+	if s == nil || s.logs == nil || incidentID == uuid.Nil {
+		return nil
+	}
+	for _, station := range alerted {
+		if err := s.logs.RecordIncidentStation(ctx, incidentID, station.ServicePointID, station.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FireStationAlertService) stations(ctx context.Context, req models.FireStationAlertRequest) ([]models.ServicePoint, error) {

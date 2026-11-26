@@ -28,10 +28,15 @@ func (h *DispatchLogHandler) List(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
 	}
+	stationID, err := loggedQueryID(c, "fire_station_id")
+	if err != nil {
+		return utils.ErrorResponse(c, fiber.StatusBadRequest, err.Error())
+	}
 	rows, err := h.svc.List(c.UserContext(), models.DispatchLogFilter{
-		IncidentID:   incidentID,
-		ResourceID:   resourceID,
-		AssignmentID: assignmentID,
+		IncidentID:    incidentID,
+		ResourceID:    resourceID,
+		AssignmentID:  assignmentID,
+		FireStationID: stationID,
 	})
 	if err != nil {
 		return writeServiceErr(c, err)

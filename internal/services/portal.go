@@ -82,7 +82,11 @@ type DeviceRegistration struct {
 	Contact          string    `json:"contact"`
 	Status           string    `json:"status"`
 	Category         string    `json:"category"`
-	Disabled         *bool     `json:"disabled"`
+	Disabled *bool `json:"disabled"`
+	// ExistingPlate is the plate already stored on the unit. It is not format-checked again.
+	ExistingPlate string `json:"-"`
+	// SkipPlateFormat is set for a unit. A filled plate is accepted; only a blank plate is rejected.
+	SkipPlateFormat bool `json:"-"`
 }
 
 // DeviceResult is stored locally and sent to Caguar.
@@ -112,23 +116,9 @@ func (s *DevicePortal) Register(ctx context.Context, req DeviceRegistration) (*D
 		return nil, Conflict("external id is already linked to another thing")
 	}
 
-	if err := s.portal.RegisterDevice(ctx, caguar.Device{
-		Name:          name,
-		UniqueID:      uniqueID,
-		Status:        status,
-		Disabled:      disabled,
-		Category:      category,
-		TrackerType:   tracker,
-		PlateNumber:   plate,
-		ChassisNumber: chassis,
-		Phone:         strings.TrimSpace(req.Phone),
-		Model:         strings.TrimSpace(req.Model),
-		Contact:       strings.TrimSpace(req.Contact),
-		ZoneIDs:       []int{},
-		Attributes:    map[string]any{},
-		Product:       caguar.ProductAutomax,
-	}); err != nil {
-		return nil, portalErr("device", uniqueID, err)
+	device := caguarDevice(name, uniqueID, status, category, tracker, plate, chassis, disabled, req)
+	if err := s.portal.RegisterDevice(ctx, device); err != nil {
+		return nil, s.deviceErr(ctx, "", device, err)
 	}
 
 	meta, err := json.Marshal(map[string]string{
@@ -194,25 +184,13 @@ func (s *DevicePortal) Update(ctx context.Context, thingID uuid.UUID, req Device
 			return nil, Conflict("external id is already linked to another thing")
 		}
 	}
-	if err := s.portal.UpdateDevice(ctx, ref.ExternalID, caguar.Device{
-		Name:          name,
-		UniqueID:      uniqueID,
-		Status:        status,
-		Disabled:      disabled,
-		Category:      category,
-		TrackerType:   tracker,
-		PlateNumber:   plate,
-		ChassisNumber: chassis,
-		Phone:         strings.TrimSpace(req.Phone),
-		Model:         strings.TrimSpace(req.Model),
-		Contact:       strings.TrimSpace(req.Contact),
-		Product:       caguar.ProductAutomax,
-	}); err != nil {
+	device := caguarDevice(name, uniqueID, status, category, tracker, plate, chassis, disabled, req)
+	if err := s.portal.UpdateDevice(ctx, ref.ExternalID, device); err != nil {
 		var remote *caguar.RemoteError
 		if errors.As(err, &remote) && remote.Status == http.StatusNotFound {
 			return nil, NotFound("device was not found in caguar")
 		}
-		return nil, portalErr("device", uniqueID, err)
+		return nil, s.deviceErr(ctx, ref.ExternalID, device, err)
 	}
 
 	meta, err := json.Marshal(map[string]string{
@@ -269,23 +247,9 @@ func (s *DevicePortal) Attach(ctx context.Context, thingID uuid.UUID, req Device
 	if owners > 0 {
 		return nil, Conflict("external id is already linked to another thing")
 	}
-	if err := s.portal.RegisterDevice(ctx, caguar.Device{
-		Name:          name,
-		UniqueID:      uniqueID,
-		Status:        status,
-		Disabled:      disabled,
-		Category:      category,
-		TrackerType:   tracker,
-		PlateNumber:   plate,
-		ChassisNumber: chassis,
-		Phone:         strings.TrimSpace(req.Phone),
-		Model:         strings.TrimSpace(req.Model),
-		Contact:       strings.TrimSpace(req.Contact),
-		ZoneIDs:       []int{},
-		Attributes:    map[string]any{},
-		Product:       caguar.ProductAutomax,
-	}); err != nil {
-		return nil, portalErr("device", uniqueID, err)
+	device := caguarDevice(name, uniqueID, status, category, tracker, plate, chassis, disabled, req)
+	if err := s.portal.RegisterDevice(ctx, device); err != nil {
+		return nil, s.deviceErr(ctx, "", device, err)
 	}
 	meta, err := json.Marshal(map[string]string{
 		"unique_id":      uniqueID,
@@ -606,7 +570,9 @@ func normalizeDevice(req DeviceRegistration) (name, uniqueID, tracker, plate, ch
 	if plate == "" {
 		plate = strings.ToUpper(strings.TrimSpace(req.PlateCamel))
 	}
-	if !platePattern.MatchString(plate) {
+	if plate == "" {
+		fields["plate_number"] = "plate_number is required"
+	} else if !req.SkipPlateFormat && !platePattern.MatchString(plate) && !samePlate(plate, req.ExistingPlate) {
 		fields["plate_number"] = "plate_number must match ABC-1234"
 	}
 	chassis = strings.TrimSpace(req.ChassisNumber)
@@ -629,6 +595,105 @@ func normalizeDevice(req DeviceRegistration) (name, uniqueID, tracker, plate, ch
 		disabled = *req.Disabled
 	}
 	return name, uniqueID, tracker, plate, chassis, status, category, disabled, fields
+}
+
+func samePlate(plate, existing string) bool {
+	existing = strings.ToUpper(strings.TrimSpace(existing))
+	return existing != "" && plate == existing
+}
+
+func caguarDevice(name, uniqueID, status, category, tracker, plate, chassis string, disabled bool, req DeviceRegistration) caguar.Device {
+	return caguar.Device{
+		Name:          name,
+		UniqueID:      uniqueID,
+		Status:        status,
+		Disabled:      disabled,
+		Category:      category,
+		TrackerType:   tracker,
+		PlateNumber:   plate,
+		ChassisNumber: chassis,
+		Phone:         strings.TrimSpace(req.Phone),
+		Model:         strings.TrimSpace(req.Model),
+		Contact:       strings.TrimSpace(req.Contact),
+		ZoneIDs:       []int{},
+		Attributes:    map[string]any{},
+		Product:       caguar.ProductAutomax,
+	}
+}
+
+type deviceCatalog interface {
+	Devices(ctx context.Context) ([]caguar.Device, error)
+}
+
+// deviceErr turns a generic Caguar add failure into the field that is already taken.
+// Caguar often answers a duplicate unique id with "Failed to add the device. Please try again later."
+func (s *DevicePortal) deviceErr(ctx context.Context, ownedUniqueID string, device caguar.Device, err error) error {
+	explained := portalErr("device", device.UniqueID, err)
+	var se *Error
+	if !errors.As(explained, &se) || se.Kind != KindInvalid || len(se.Fields) > 0 || !vagueDeviceFailure(se.Message) {
+		return explained
+	}
+	catalog, ok := s.portal.(deviceCatalog)
+	if !ok || s.portal == nil {
+		return explained
+	}
+	devices, listErr := catalog.Devices(ctx)
+	if listErr != nil {
+		log.Printf("registry: caguar device list failed while explaining unique_id=%s err=%v", device.UniqueID, listErr)
+		return explained
+	}
+	fields := takenDeviceFields(devices, ownedUniqueID, device)
+	if len(fields) == 0 {
+		return explained
+	}
+	log.Printf("registry: caguar device rejected unique_id=%s matched=%v", device.UniqueID, fields)
+	return Invalid("validation failed", fields)
+}
+
+func vagueDeviceFailure(msg string) bool {
+	text := strings.ToLower(msg)
+	return strings.Contains(text, "try again") ||
+		strings.Contains(text, "add the device") ||
+		strings.Contains(text, "unexpected error") ||
+		strings.Contains(text, "caguar rejected")
+}
+
+func takenDeviceFields(devices []caguar.Device, ownedUniqueID string, device caguar.Device) map[string]string {
+	name := strings.TrimSpace(device.Name)
+	uniqueID := strings.TrimSpace(device.UniqueID)
+	plate := strings.TrimSpace(device.PlateNumber)
+	chassis := strings.TrimSpace(device.ChassisNumber)
+	owned := strings.TrimSpace(ownedUniqueID)
+	var sameName, sameUnique, sameChassis, samePlate bool
+	for _, existing := range devices {
+		if owned != "" && strings.EqualFold(strings.TrimSpace(existing.UniqueID), owned) {
+			continue
+		}
+		if name != "" && strings.EqualFold(strings.TrimSpace(existing.Name), name) {
+			sameName = true
+		}
+		if uniqueID != "" && strings.EqualFold(strings.TrimSpace(existing.UniqueID), uniqueID) {
+			sameUnique = true
+		}
+		if chassis != "" && strings.EqualFold(strings.TrimSpace(existing.ChassisNumber), chassis) {
+			sameChassis = true
+		}
+		if plate != "" && strings.EqualFold(strings.TrimSpace(existing.PlateNumber), plate) {
+			samePlate = true
+		}
+	}
+	switch {
+	case sameName:
+		return map[string]string{"name": "name is already used in Caguar"}
+	case sameUnique:
+		return map[string]string{"unique_id": "unique_id is already used in Caguar"}
+	case sameChassis:
+		return map[string]string{"chassis_number": "chassis_number is already used in Caguar"}
+	case samePlate:
+		return map[string]string{"plate_number": "plate_number is already used in Caguar"}
+	default:
+		return nil
+	}
 }
 
 func portalErr(kind, uniqueID string, err error) error {

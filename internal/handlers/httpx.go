@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/automax/registry/internal/services"
@@ -53,31 +54,47 @@ func writeServiceErr(c *fiber.Ctx, err error) error {
 				})
 			}
 			log.Printf("registry: %s %s rejected status=400 reason=%s", c.Method(), c.Path(), reason)
-			return utils.ErrorResponse(c, fiber.StatusBadRequest, se.Message)
+			return serviceError(c, fiber.StatusBadRequest, se.Message)
 		case services.KindNotFound:
 			log.Printf("registry: %s %s rejected status=404 reason=%s", c.Method(), c.Path(), se.Message)
-			return utils.ErrorResponse(c, fiber.StatusNotFound, se.Message)
+			return serviceError(c, fiber.StatusNotFound, se.Message)
 		case services.KindConflict:
 			log.Printf("registry: %s %s rejected status=409 reason=%s", c.Method(), c.Path(), se.Message)
-			return utils.ErrorResponse(c, fiber.StatusConflict, se.Message)
+			return serviceError(c, fiber.StatusConflict, se.Message)
 		case services.KindUnavailable:
 			log.Printf("registry: %s %s rejected status=503 reason=%s", c.Method(), c.Path(), se.Message)
-			return utils.ErrorResponse(c, fiber.StatusServiceUnavailable, se.Message)
+			return serviceError(c, fiber.StatusServiceUnavailable, se.Message)
 		case services.KindUpstream:
 			log.Printf("registry: %s %s rejected status=502 reason=%s", c.Method(), c.Path(), se.Message)
-			return utils.ErrorResponse(c, fiber.StatusBadGateway, se.Message)
+			return serviceError(c, fiber.StatusBadGateway, se.Message)
 		}
 	}
 	return utils.InternalErrorResponse(c, err, "internal server error")
 }
 
+// serviceError puts the reason in both error and message. The unit form toasts message.
+func serviceError(c *fiber.Ctx, status int, msg string) error {
+	return c.Status(status).JSON(fiber.Map{
+		"success": false,
+		"error":   msg,
+		"message": msg,
+	})
+}
+
 func fieldMessage(fallback string, fields map[string]string) string {
-	if len(fields) == 1 {
-		for _, msg := range fields {
-			return msg
-		}
+	if len(fields) == 0 {
+		return fallback
 	}
-	return fallback
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fields[name])
+	}
+	return strings.Join(parts, "; ")
 }
 
 // fieldErrors wraps each message in a list. The unit, unit type, and fire station

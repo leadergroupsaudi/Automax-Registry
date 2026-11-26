@@ -12,8 +12,10 @@ import (
 )
 
 type ServicePointService struct {
-	repo repository.ServicePointRepository
-	pub  Publisher
+	repo      repository.ServicePointRepository
+	resources repository.ResourceRepository
+	logs      *DispatchLogService
+	pub       Publisher
 }
 
 func NewServicePointService(repo repository.ServicePointRepository) *ServicePointService {
@@ -25,6 +27,20 @@ func (s *ServicePointService) UsePublisher(pub Publisher) {
 		return
 	}
 	s.pub = pub
+}
+
+func (s *ServicePointService) UseResources(resources repository.ResourceRepository) {
+	if s == nil {
+		return
+	}
+	s.resources = resources
+}
+
+func (s *ServicePointService) UseDispatchLog(logs *DispatchLogService) {
+	if s == nil {
+		return
+	}
+	s.logs = logs
 }
 
 func (s *ServicePointService) Create(ctx context.Context, req models.ServicePointWriteRequest) (*models.ServicePointResponse, error) {
@@ -75,11 +91,22 @@ func (s *ServicePointService) assign(ctx context.Context, row *models.ServicePoi
 	if req.ResourceIDs == nil {
 		return nil
 	}
+	previous := uniqueUUIDs([]uuid.UUID(row.ResourceIDs))
 	ids := uniqueUUIDs(*req.ResourceIDs)
+	moved, err := s.previousStations(ctx, row.ID, previous, ids)
+	if err != nil {
+		return err
+	}
 	if err := s.repo.AssignResources(ctx, row.ID, ids); err != nil {
 		if errors.Is(err, repository.ErrUnknownResource) {
 			return Invalid("validation failed", map[string]string{"resource_ids": "one or more resources were not found"})
 		}
+		return err
+	}
+	if err := s.recordLeftStations(ctx, row.ID, moved); err != nil {
+		return err
+	}
+	if err := s.recordStationChanges(ctx, row, previous, ids); err != nil {
 		return err
 	}
 	stored, err := s.repo.FindByID(ctx, row.ID)
@@ -90,10 +117,101 @@ func (s *ServicePointService) assign(ctx context.Context, row *models.ServicePoi
 	return nil
 }
 
+// previousStations is the home station of each unit that is about to be dropped here from somewhere else.
+func (s *ServicePointService) previousStations(ctx context.Context, pointID uuid.UUID, previous, next []uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	out := map[uuid.UUID]uuid.UUID{}
+	if s == nil || s.resources == nil {
+		return out, nil
+	}
+	staying := map[uuid.UUID]struct{}{}
+	for _, id := range previous {
+		staying[id] = struct{}{}
+	}
+	for _, id := range next {
+		if _, ok := staying[id]; ok {
+			continue
+		}
+		resource, err := s.resources.FindByID(ctx, id)
+		if err != nil {
+			if repository.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if resource.ServicePointID == nil || *resource.ServicePointID == uuid.Nil || *resource.ServicePointID == pointID {
+			continue
+		}
+		out[id] = *resource.ServicePointID
+	}
+	return out, nil
+}
+
+func (s *ServicePointService) recordStationChanges(ctx context.Context, point *models.ServicePoint, previous, next []uuid.UUID) error {
+	if s == nil || s.logs == nil || point == nil {
+		return nil
+	}
+	before := map[uuid.UUID]struct{}{}
+	for _, id := range previous {
+		before[id] = struct{}{}
+	}
+	after := map[uuid.UUID]struct{}{}
+	for _, id := range next {
+		after[id] = struct{}{}
+	}
+	for _, id := range next {
+		if _, ok := before[id]; ok {
+			continue
+		}
+		if err := s.logs.RecordUnitStation(ctx, id, point.ID, point.Name, true); err != nil {
+			return err
+		}
+	}
+	for _, id := range previous {
+		if _, ok := after[id]; ok {
+			continue
+		}
+		if err := s.logs.RecordUnitStation(ctx, id, point.ID, point.Name, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ServicePointService) recordLeftStations(ctx context.Context, pointID uuid.UUID, moved map[uuid.UUID]uuid.UUID) error {
+	if s == nil || s.logs == nil || len(moved) == 0 {
+		return nil
+	}
+	names := map[uuid.UUID]string{}
+	for resourceID, stationID := range moved {
+		if stationID == pointID {
+			continue
+		}
+		name, ok := names[stationID]
+		if !ok {
+			station, err := s.repo.FindByID(ctx, stationID)
+			if err != nil {
+				return err
+			}
+			name = station.Name
+			names[stationID] = name
+		}
+		if err := s.logs.RecordUnitStation(ctx, resourceID, stationID, name, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *ServicePointService) Delete(ctx context.Context, id uuid.UUID, force bool) error {
 	if force {
+		current, findErr := s.repo.FindByID(ctx, id)
 		if err := s.repo.AssignResources(ctx, id, nil); err != nil {
 			return err
+		}
+		if findErr == nil && current != nil {
+			if err := s.recordStationChanges(ctx, current, []uuid.UUID(current.ResourceIDs), nil); err != nil {
+				return err
+			}
 		}
 	}
 	n, err := s.repo.ResourceCount(ctx, id)

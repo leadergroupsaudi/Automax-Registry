@@ -81,24 +81,24 @@ func TestDispatchRoutes(t *testing.T) {
 	thingID := dataID(t, thingBody)
 	secondThing := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/registry/things", fmt.Sprintf(`{"name":"Engine 5","type":"vehicle","department_id":"%s"}`, dept)), http.StatusCreated))
 
-	unknownThing := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s"}`, uuid.New(), typeID)), http.StatusBadRequest)
+	unknownThing := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","name":"Missing","unique_id":"UNIT-MISSING","plate_number":"ENG-1001","chassis_number":"CHS1001"}`, uuid.New(), typeID)), http.StatusBadRequest)
 	if errorFields(t, unknownThing)["thing_id"] != "thing_id does not match a registry thing" {
 		t.Fatalf("unknown thing %#v", unknownThing)
 	}
-	resourceBody := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s"}`, thingID, typeID, pointID)), http.StatusCreated)
+	resourceBody := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID, pointID)), http.StatusCreated)
 	resourceID := dataID(t, resourceBody)
 	resourceRow := dataObject(t, resourceBody)
 	if resourceRow["thing_id"] != thingID || resourceRow["name"] != "Engine 4" || resourceRow["status"] != "available" || resourceRow["service_point_id"] != pointID {
 		t.Fatalf("resource %#v", resourceRow)
 	}
 	assertThingResource(t, thingID, typeID, pointID, "available")
-	dup := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s"}`, thingID, typeID)), http.StatusConflict)
+	dup := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID)), http.StatusConflict)
 	if dup["error"] != "a resource already exists for this thing" {
 		t.Fatalf("duplicate %#v", dup)
 	}
-	secondResource := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","status":"maintenance"}`, secondThing, otherTypeID)), http.StatusCreated))
+	secondResource := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","status":"maintenance","name":"Engine 5","unique_id":"UNIT-5","plate_number":"ENG-1005","chassis_number":"CHS1005"}`, secondThing, otherTypeID)), http.StatusCreated))
 
-	updated := requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched"}`, thingID, typeID, pointID)), http.StatusOK)
+	updated := requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID, pointID)), http.StatusOK)
 	if dataObject(t, updated)["status"] != "dispatched" {
 		t.Fatalf("updated %#v", updated)
 	}
@@ -109,7 +109,7 @@ func TestDispatchRoutes(t *testing.T) {
 	}
 	requireStatus(t, do(t, app, http.MethodGet, "/dispatch/resources?status=nope", ""), http.StatusBadRequest)
 	driverID := uuid.New().String()
-	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
+	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
 	incidentID := uuid.New()
 	driversBody := fmt.Sprintf(`{"service_id":"%s","incident_id":"%s"}`, pointID, incidentID)
 	drivers := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources/drivers", driversBody), http.StatusOK)
@@ -142,7 +142,7 @@ func TestDispatchRoutes(t *testing.T) {
 	if dataObject(t, fetched)["incident_id"] != incidentID.String() {
 		t.Fatalf("fetched resource %#v", fetched)
 	}
-	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
+	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(`{"thing_id":"%s","resource_type_id":"%s","service_point_id":"%s","status":"dispatched","driver_user_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID, pointID, driverID)), http.StatusOK)
 	kept := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/resources/"+resourceID, ""), http.StatusOK)
 	if dataObject(t, kept)["incident_id"] != incidentID.String() {
 		t.Fatalf("PUT must not clear incident_id %#v", kept)

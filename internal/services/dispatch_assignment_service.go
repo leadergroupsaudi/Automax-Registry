@@ -300,11 +300,14 @@ func (s *DispatchAssignmentService) record(ctx context.Context, action string, f
 	if s == nil || s.logs == nil || to == nil {
 		return nil
 	}
+	assignmentID := to.ID
+	incidentID := to.IncidentID
+	resourceID := to.ResourceID
 	entry := &models.DispatchLog{
-		AssignmentID: to.ID,
-		IncidentID:   to.IncidentID,
-		ResourceID:   to.ResourceID,
-		Role:         to.Role,
+		AssignmentID: &assignmentID,
+		IncidentID:   &incidentID,
+		ResourceID:   &resourceID,
+		Role:         textPtr(to.Role),
 		Action:       action,
 		ToStatus:     statusPtr(to.Status),
 	}

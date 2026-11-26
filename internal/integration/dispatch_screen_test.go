@@ -49,6 +49,7 @@ func TestDispatchScreenFields(t *testing.T) {
 
 	unit := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{
 		"name":"Engine 9","resource_type_id":"%s","service_point_id":"%s",
+		"unique_id":"UNIT-9","plate_number":"ENG-1009","chassis_number":"CHS1009",
 		"unit_code":"U-9","location_id":"%s","classification_ids":["%s"],
 		"gprs":"g1","sms":"s1","sms_vip":"v1","sim":"sim1",
 		"driver_user_id":"%s","shift_id":"%s","partner_user_id":"%s",
@@ -70,7 +71,7 @@ func TestDispatchScreenFields(t *testing.T) {
 	}
 
 	other := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(
-		`{"name":"Engine 10","resource_type_id":"%s"}`, typeID)), http.StatusCreated))
+		`{"name":"Engine 10","resource_type_id":"%s","unique_id":"UNIT-10","plate_number":"ENG-1010","chassis_number":"CHS1010"}`, typeID)), http.StatusCreated))
 	moved := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/service-points", fmt.Sprintf(`{
 		"name":"South","department_id":"%s","radio_id":"FS-2","location":{"lat":29.2,"lng":48.2},
 		"resource_ids":["%s"]

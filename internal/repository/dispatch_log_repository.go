@@ -33,6 +33,9 @@ func (r *dispatchLogRepository) List(ctx context.Context, filter models.Dispatch
 	if filter.AssignmentID != nil {
 		q = q.Where("assignment_id = ?", *filter.AssignmentID)
 	}
+	if filter.FireStationID != nil {
+		q = q.Where("fire_station_id = ?", *filter.FireStationID)
+	}
 	var rows []models.DispatchLog
 	err := q.Order("created_at ASC, id ASC").Find(&rows).Error
 	return rows, err

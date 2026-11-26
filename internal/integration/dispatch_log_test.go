@@ -19,15 +19,20 @@ func TestDispatchLog(t *testing.T) {
 	thingID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/registry/things", fmt.Sprintf(
 		`{"name":"Engine 12","type":"vehicle","department_id":"%s"}`, dept)), http.StatusCreated))
 	resourceID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(
-		`{"thing_id":"%s","resource_type_id":"%s"}`, thingID, typeID)), http.StatusCreated))
+		`{"thing_id":"%s","resource_type_id":"%s","name":"Engine 12","unique_id":"UNIT-12","plate_number":"ENG-1012","chassis_number":"CHS1012"}`, thingID, typeID)), http.StatusCreated))
 	pointID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/service-points", fmt.Sprintf(
 		`{"name":"Station 9","department_id":"%s","radio_id":"S9","location":{"lat":12.97,"lng":77.59}}`, dept)), http.StatusCreated))
 	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/incidents/"+incident+"/fire-station-alerts", fmt.Sprintf(
 		`{"department_id":"%s","all":false,"service_point_ids":["%s"]}`, dept, pointID)), http.StatusOK)
 
-	empty := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?incident_id="+incident, ""), http.StatusOK)
-	if rows, ok := empty["data"].([]any); !ok || len(rows) != 0 {
-		t.Fatalf("empty log %#v", empty["data"])
+	assignedStation := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?incident_id="+incident, ""), http.StatusOK)
+	assignedRows, _ := assignedStation["data"].([]any)
+	if len(assignedRows) != 1 {
+		t.Fatalf("incident station log %#v", assignedStation["data"])
+	}
+	assignedItem, _ := assignedRows[0].(map[string]any)
+	if assignedItem["action"] != "incident_assigned" || assignedItem["fire_station_id"] != pointID || assignedItem["fire_station_name"] != "Station 9" || assignedItem["resource_id"] != nil || assignedItem["assignment_id"] != nil {
+		t.Fatalf("incident station row %#v", assignedItem)
 	}
 	requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?incident_id=nope", ""), http.StatusBadRequest)
 
@@ -45,9 +50,10 @@ func TestDispatchLog(t *testing.T) {
 
 	listed := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?incident_id="+incident, ""), http.StatusOK)
 	rows, _ := listed["data"].([]any)
-	if len(rows) != 4 {
+	if len(rows) != 5 {
 		t.Fatalf("log rows = %d %#v", len(rows), listed["data"])
 	}
+	rows = rows[1:]
 	want := []struct{ action, from, to, role string }{
 		{"created", "", "offered", "master"},
 		{"status_changed", "offered", "accepted", "master"},
@@ -85,4 +91,88 @@ func TestDispatchLog(t *testing.T) {
 	if rows, _ := other["data"].([]any); len(rows) != 0 {
 		t.Fatalf("other incident %#v", other["data"])
 	}
+}
+
+func TestDispatchLogStationDrop(t *testing.T) {
+	truncate(t)
+	app := newApp(nil)
+	dept := uuid.New().String()
+	typeID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resource-types", fmt.Sprintf(
+		`{"name":"Engine","department_id":"%s"}`, dept)), http.StatusCreated))
+	thingID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/registry/things", fmt.Sprintf(
+		`{"name":"Engine 4","type":"vehicle","department_id":"%s"}`, dept)), http.StatusCreated))
+	resourceID := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(
+		`{"thing_id":"%s","resource_type_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004"}`, thingID, typeID)), http.StatusCreated))
+	stationA := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/service-points", fmt.Sprintf(
+		`{"name":"Station A","department_id":"%s","radio_id":"A1","location":{"lat":12.97,"lng":77.59}}`, dept)), http.StatusCreated))
+	stationB := dataID(t, requireStatus(t, do(t, app, http.MethodPost, "/dispatch/service-points", fmt.Sprintf(
+		`{"name":"Station B","department_id":"%s","radio_id":"B1","location":{"lat":12.98,"lng":77.60}}`, dept)), http.StatusCreated))
+
+	none := requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?resource_id="+resourceID, ""), http.StatusOK)
+	if rows, _ := none["data"].([]any); len(rows) != 0 {
+		t.Fatalf("log before drop %#v", none["data"])
+	}
+
+	putStation := func(id, name, resources string) {
+		t.Helper()
+		requireStatus(t, do(t, app, http.MethodPut, "/dispatch/service-points/"+id, fmt.Sprintf(
+			`{"name":"%s","department_id":"%s","location":{"lat":12.97,"lng":77.59},"resource_ids":[%s]}`, name, dept, resources)), http.StatusOK)
+	}
+	putStation(stationA, "Station A", `"`+resourceID+`"`)
+	dropped := logRows(t, requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?resource_id="+resourceID, ""), http.StatusOK))
+	if len(dropped) != 1 || dropped[0]["action"] != "station_assigned" || dropped[0]["fire_station_id"] != stationA || dropped[0]["fire_station_name"] != "Station A" || dropped[0]["assignment_id"] != nil {
+		t.Fatalf("drop %#v", dropped)
+	}
+
+	putStation(stationB, "Station B", `"`+resourceID+`"`)
+	moved := logRows(t, requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?resource_id="+resourceID, ""), http.StatusOK))
+	if !hasLog(moved, "station_unassigned", stationA) || !hasLog(moved, "station_assigned", stationB) {
+		t.Fatalf("move %#v", moved)
+	}
+
+	putStation(stationB, "Station B", "")
+	removed := logRows(t, requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?fire_station_id="+stationB, ""), http.StatusOK))
+	if !hasLog(removed, "station_assigned", stationB) || !hasLog(removed, "station_unassigned", stationB) {
+		t.Fatalf("remove %#v", removed)
+	}
+
+	requireStatus(t, do(t, app, http.MethodPut, "/dispatch/resources/"+resourceID, fmt.Sprintf(
+		`{"thing_id":"%s","resource_type_id":"%s","name":"Engine 4","unique_id":"UNIT-4","plate_number":"ENG-1004","chassis_number":"CHS1004","service_point_id":"%s"}`, thingID, typeID, stationA)), http.StatusOK)
+	again := logRows(t, requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?resource_id="+resourceID, ""), http.StatusOK))
+	if countLog(again, "station_assigned", stationA) != 2 {
+		t.Fatalf("unit update %#v", again)
+	}
+
+	incident := uuid.New().String()
+	requireStatus(t, do(t, app, http.MethodPost, "/dispatch/incidents/"+incident+"/fire-station-alerts", fmt.Sprintf(
+		`{"department_id":"%s","all":false,"service_point_ids":["%s"]}`, dept, stationA)), http.StatusOK)
+	incidentRows := logRows(t, requireStatus(t, do(t, app, http.MethodGet, "/dispatch/logs?incident_id="+incident, ""), http.StatusOK))
+	if len(incidentRows) != 1 || incidentRows[0]["action"] != "incident_assigned" || incidentRows[0]["fire_station_id"] != stationA || incidentRows[0]["fire_station_name"] != "Station A" {
+		t.Fatalf("incident assign %#v", incidentRows)
+	}
+}
+
+func logRows(t *testing.T, body map[string]any) []map[string]any {
+	t.Helper()
+	raw, _ := body["data"].([]any)
+	rows := make([]map[string]any, 0, len(raw))
+	for _, row := range raw {
+		item, _ := row.(map[string]any)
+		rows = append(rows, item)
+	}
+	return rows
+}
+
+func hasLog(rows []map[string]any, action, stationID string) bool {
+	return countLog(rows, action, stationID) > 0
+}
+
+func countLog(rows []map[string]any, action, stationID string) int {
+	n := 0
+	for _, row := range rows {
+		if row["action"] == action && row["fire_station_id"] == stationID {
+			n++
+		}
+	}
+	return n
 }

@@ -29,6 +29,69 @@ func TestUnitCreateDoesNotCallCaguarWhenTypeIsMissing(t *testing.T) {
 	}
 }
 
+func TestUnitCreateRejectsBlankIdentity(t *testing.T) {
+	h := newUnitHarness(t)
+	req := unitRequest(h, h.typeID.String())
+	req.Name = nil
+	req.UniqueID = ""
+	req.PlateNumber = nil
+	req.ChassisNumber = ""
+	_, err := h.svc.Create(context.Background(), req)
+	fields := errFields(t, err)
+	if fields["name"] != "name is required" || fields["unique_id"] != "unique_id is required" || fields["plate_number"] != "plate_number is required" || fields["chassis_number"] != "chassis_number is required" {
+		t.Fatalf("fields %#v", fields)
+	}
+	if len(h.resources.rows) != 0 || h.portal.device.UniqueID != "" {
+		t.Fatalf("stored rows %d caguar %#v", len(h.resources.rows), h.portal.device)
+	}
+}
+
+func TestUnitUpdateKeepsAnExistingPlate(t *testing.T) {
+	h := newUnitHarness(t)
+	thingID := uuid.New()
+	resourceID := uuid.New()
+	h.db.things[thingID] = &models.Thing{ID: thingID, Name: "Engine 1", Type: "vehicle", IsTrackable: true, DepartmentID: h.dept, Metadata: models.JSON(`{"chassis_number":"CHS1"}`)}
+	h.resources.rows[resourceID] = &models.Resource{ID: resourceID, ThingID: thingID, Name: "Engine 1", ResourceTypeID: h.typeID, Status: models.ResourceAvailable, UniqueID: "OLD-1", PlateNumber: "12233", IsActive: true}
+	h.owners.ref = &models.ThingExternalRef{ID: uuid.New(), ThingID: thingID, ExternalSystem: models.ExternalSystemTraccar, ExternalID: "OLD-1"}
+
+	name := "Engine 1"
+	plate := "12233"
+	req := unitRequest(h, h.typeID.String())
+	req.Name = &name
+	req.PlateNumber = &plate
+	req.ThingID = thingID
+	req.UniqueID = "NEW-1"
+	req.ChassisNumber = "CHS1"
+	if _, err := h.svc.Update(context.Background(), resourceID, req); err != nil {
+		t.Fatal(err)
+	}
+	if h.portal.device.UniqueID != "NEW-1" || h.portal.device.PlateNumber != "12233" {
+		t.Fatalf("sent %#v", h.portal.device)
+	}
+}
+
+func TestUnitUpdateRejectsBlankIdentity(t *testing.T) {
+	h := newUnitHarness(t)
+	thingID := uuid.New()
+	resourceID := uuid.New()
+	h.db.things[thingID] = &models.Thing{ID: thingID, Name: "Engine 1", Type: "vehicle", IsTrackable: true, DepartmentID: h.dept, Metadata: models.JSON(`{"chassis_number":"CHS1"}`)}
+	h.resources.rows[resourceID] = &models.Resource{ID: resourceID, ThingID: thingID, Name: "Engine 1", ResourceTypeID: h.typeID, Status: models.ResourceAvailable, UniqueID: "OLD-1", PlateNumber: "ENG-1001", IsActive: true}
+	h.owners.ref = &models.ThingExternalRef{ID: uuid.New(), ThingID: thingID, ExternalSystem: models.ExternalSystemTraccar, ExternalID: "OLD-1"}
+
+	blank := ""
+	req := unitRequest(h, h.typeID.String())
+	req.Name = &blank
+	req.PlateNumber = &blank
+	req.ThingID = thingID
+	req.UniqueID = " "
+	req.ChassisNumber = " "
+	_, err := h.svc.Update(context.Background(), resourceID, req)
+	fields := errFields(t, err)
+	if fields["name"] != "name is required" || fields["unique_id"] != "unique_id is required" || fields["plate_number"] != "plate_number is required" || fields["chassis_number"] != "chassis_number is required" {
+		t.Fatalf("fields %#v", fields)
+	}
+}
+
 func TestUnitCreateStaysLocalWhenCaguarIsDown(t *testing.T) {
 	h := newUnitHarness(t)
 	h.portal.err = fmt.Errorf("dial tcp: connection refused")

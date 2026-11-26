@@ -55,7 +55,7 @@ func TestDispatchMasterFields(t *testing.T) {
 
 	unit := requireStatus(t, do(t, app, http.MethodPost, "/dispatch/resources", fmt.Sprintf(`{
 		"name":"Engine 9","resource_type_id":"%s","service_point_id":"%s",
-		"plate_number":"12233","alternate_name":"محرك","radio_id":"234",
+		"unique_id":"UNIT-9","plate_number":"12233","chassis_number":"CHS1009","alternate_name":"محرك","radio_id":"234",
 		"classification":["إنقاذ","إنقاذ"],"call_code":"C1","description":"wd"
 	}`, typeID, pointID)), http.StatusCreated)
 	unitRow := dataObject(t, unit)
